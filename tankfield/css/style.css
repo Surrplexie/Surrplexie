@@ -438,8 +438,25 @@ kbd {
   position: fixed;
   top: 10px;
   right: 12px;
-  width: min(280px, calc(var(--app-w) - 24px));
+  width: min(242px, calc(var(--app-w) - 24px));
   z-index: 5;
+}
+
+#scoreboard::before {
+  content: "Leaderboard";
+  display: block;
+  margin: 0 0 5px 22px;
+  text-align: center;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  text-shadow:
+    -1px -1px 0 #555,
+     1px -1px 0 #555,
+    -1px  1px 0 #555,
+     1px  1px 0 #555,
+     0 2px 2px rgba(0, 0, 0, 0.55);
 }
 
 #leader-list {
@@ -451,13 +468,17 @@ kbd {
 #leader-list li {
   position: relative;
   height: 18px;
-  margin-bottom: 3px;
+  width: calc(100% - 22px);
+  margin: 0 0 3px 22px;
+  border: 2px solid #555;
   border-radius: 9px;
-  overflow: hidden;
-  background: rgba(0, 0, 0, 0.18);
+  overflow: visible;
+  background: #aaa;
 }
 
 #leader-list li.team-tot {
+  width: 100%;
+  margin-left: 0;
   background: #888;
   font-weight: 700;
   margin-bottom: 5px;
@@ -470,8 +491,14 @@ kbd {
 
 #leader-list li.team-tot > span {
   display: block;
+  padding: 1px 8px;
   text-align: right;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: #fff;
+  text-shadow: 0 0 3px #000, 0 1px 2px #000;
 }
 
 #leader-list li.team-tot + li:not(.team-tot) {
@@ -481,8 +508,8 @@ kbd {
 #leader-list .lb-fill {
   position: absolute;
   inset: 0 auto 0 0;
-  background: rgba(255, 255, 255, 0.22);
-  border-radius: 9px;
+  opacity: 0.9;
+  border-radius: 7px;
 }
 
 #leader-list li.you .lb-fill {
@@ -493,43 +520,39 @@ kbd {
   background: rgba(232, 176, 32, 0.55);
 }
 
-#leader-list li > span {
+#leader-list li > .lb-row {
   position: relative;
   z-index: 1;
-  display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) minmax(0, 92px) 58px;
+  display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
   width: 100%;
-  padding: 1px 8px;
-  font-size: 12px;
+  height: 100%;
+  padding: 0 5px;
+  font-size: 11px;
+  font-weight: 700;
   white-space: nowrap;
   text-shadow: 0 0 3px #000, 0 1px 2px #000;
 }
 
-.lb-name,
-.lb-tank {
+.lb-label {
+  display: block;
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.lb-name,
-.lb-tank,
-.lb-score {
-  text-align: right;
-}
-
-.lb-score {
+  white-space: nowrap;
+  text-align: center;
   font-variant-numeric: tabular-nums;
 }
 
-.lb-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex: 0 0 auto;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+.lb-icon {
+  position: absolute;
+  top: 50%;
+  left: -24px;
+  width: 24px;
+  height: 24px;
+  transform: translateY(-50%);
 }
 
 #minimap-wrap {

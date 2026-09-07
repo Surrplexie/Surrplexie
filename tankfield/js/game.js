@@ -5327,13 +5327,18 @@
     const playerRows = ranked.map((t) => {
       const name = `${t.name}${t === state.hunted ? " · hunted" : ""}`;
       const tankName = getDef(t).name;
-      return `<li class="${t === state.player ? "you" : ""} ${t === state.hunted ? "hunted" : ""}"><div class="lb-fill" style="width:${clamp((t.score / top) * 100, 8, 100)}%"></div><span><i class="lb-dot" style="background:${t.color}"></i><span class="lb-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span><span class="lb-tank" title="${escapeHtml(tankName)}">${escapeHtml(tankName)}</span><span class="lb-score">${formatScore(t.score)}</span></span></li>`;
+      const label = `${name} - ${tankName}: ${formatScore(t.score)}`;
+      return `<li class="${t === state.player ? "you" : ""} ${t === state.hunted ? "hunted" : ""}"><div class="lb-fill" style="width:${clamp((t.score / top) * 100, 8, 100)}%;background:${t.color}"></div><span class="lb-row"><canvas class="lb-icon" width="24" height="24"></canvas><span class="lb-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span></span></li>`;
     }).join("");
     els.leaders.innerHTML = (teamRows
       ? teamRows.map((r) =>
         `<li class="team-tot" style="background:${r.color}"><span>${escapeHtml(r.label)}</span></li>`
       ).join("")
       : "") + playerRows;
+    els.leaders.querySelectorAll(".lb-icon").forEach((icon, i) => {
+      const tank = ranked[i];
+      if (tank) drawPreview(icon, getDef(tank), tank.color, -1, "transparent");
+    });
   }
 
   function teamBoardRows() {
