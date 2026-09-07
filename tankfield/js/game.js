@@ -2682,7 +2682,7 @@
       return;
     }
     const wasTopTen = rankedTanks(tank).slice(0, 10).includes(tank);
-    const keepTankOnRespawn = tank.ai && Math.random() < (wasTopTen ? 0.8 : 0.2);
+    const keepTankOnRespawn = tank.ai && Math.random() < (wasTopTen ? 0.9 : 0.1);
     tank.respawnClassId = keepTankOnRespawn ? tank.classId : null;
     tank.respawnCustomDef = keepTankOnRespawn && tank.customDef
       ? TankCatalog.cloneDef(tank.customDef)
