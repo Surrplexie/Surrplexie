@@ -2349,7 +2349,7 @@
     }
   }
 
-  function autoUpgradeBot(bot) {
+  function autoUpgradeBot(bot, preserveClass = false) {
     applyLevel(bot);
     const rammerIds = new Set(["smasher", "landmine", "spike", "autosmasher", "bonker", "auto_bonker", "auto_smasher"]);
     const dead = state.mode === "onehp" ? ["maxHealth", "regen", "shieldCap", "shieldRegen"] : [];
@@ -2374,20 +2374,22 @@
       bot.stats[pool[irand(0, pool.length - 1)]]++;
       left--;
     }
-    const seen = new Set();
-    while (!seen.has(bot.classId)) {
-      seen.add(bot.classId);
-      const def = TankCatalog.get(bot.classId);
-      let opts = classUpgrades(def, bot);
-      if (!opts.length) break;
-      if (bot.aiFocus === "ram") {
-        const ram = opts.filter((id) => rammerIds.has(id));
-        if (ram.length) opts = ram;
-      } else {
-        const guns = opts.filter((id) => !rammerIds.has(id));
-        if (guns.length) opts = guns;
+    if (!preserveClass) {
+      const seen = new Set();
+      while (!seen.has(bot.classId)) {
+        seen.add(bot.classId);
+        const def = TankCatalog.get(bot.classId);
+        let opts = classUpgrades(def, bot);
+        if (!opts.length) break;
+        if (bot.aiFocus === "ram") {
+          const ram = opts.filter((id) => rammerIds.has(id));
+          if (ram.length) opts = ram;
+        } else {
+          const guns = opts.filter((id) => !rammerIds.has(id));
+          if (guns.length) opts = guns;
+        }
+        bot.classId = opts[irand(0, opts.length - 1)];
       }
-      bot.classId = opts[irand(0, opts.length - 1)];
     }
     applyLevel(bot);
   }
@@ -2667,12 +2669,23 @@
     }
   }
 
+  function rankedTanks(includeTank = null) {
+    return state.tanks
+      .filter((t) => (t.alive || t === includeTank) && !t.closer && !t.mothership && !t.dominator && !t.boss && !t.fodder)
+      .sort((a, b) => b.score - a.score);
+  }
+
   function killTank(tank, killer, cause) {
     if (!tank || tank.deadHandled) return;
     if (tank.dominator) {
       wreckDominator(tank, killer && killer.owner ? killer.owner : killer);
       return;
     }
+    const keepTankOnRespawn = tank.ai && rankedTanks(tank).slice(0, 10).includes(tank);
+    tank.respawnClassId = keepTankOnRespawn ? tank.classId : null;
+    tank.respawnCustomDef = keepTankOnRespawn && tank.customDef
+      ? TankCatalog.cloneDef(tank.customDef)
+      : null;
     tank.deadHandled = true;
     tank.alive = false;
     clearOwnedShots(tank);
@@ -2724,11 +2737,13 @@
       const focus = tank.aiFocus;
       setTimeout(() => {
         if (!running || state.closing || royaleLocked()) return;
+        const preserveClass = !!tank.respawnClassId;
         const bot = createTank({
           name: tank.name,
           ai: true,
           score: kept,
-          classId: "basic",
+          classId: tank.respawnClassId || "basic",
+          customDef: tank.respawnCustomDef,
           team,
           color: colorFor({ team }),
           pos: (state.mode === "tdm" || state.mode === "4tdm") && team
@@ -2758,7 +2773,7 @@
         } else if (state.mode === "siege") {
           bot.aiJob = Math.random() < 0.62 ? "defend" : "roam";
         }
-        autoUpgradeBot(bot);
+        autoUpgradeBot(bot, preserveClass);
         if (bot.guard) {
           bot.classId = "assault_guard";
           applyLevel(bot);
@@ -2954,11 +2969,13 @@
   }
 
   function reviveRoyaleBot(old) {
+    const preserveClass = !!old.respawnClassId;
     const bot = createTank({
       name: old.name,
       ai: true,
       score: carryScore(old.score),
-      classId: "basic",
+      classId: old.respawnClassId || "basic",
+      customDef: old.respawnCustomDef,
       team: old.team,
       color: colorFor({ team: old.team }),
       pos: randomInWorld(240),
@@ -2966,7 +2983,7 @@
     bot.aiFocus = old.aiFocus || ["gun", "gun", "farm", "ram"][irand(0, 3)];
     bot.aiHunt = Math.random() < 0.58 ? "mid" : "roam";
     rollBotBrain(bot);
-    autoUpgradeBot(bot);
+    autoUpgradeBot(bot, preserveClass);
     bot.health = bot.maxHealth;
     bot.shield = bot.maxShield || 0;
     bot.spawnProtect = 5;
@@ -5180,7 +5197,7 @@
     const nxt = xpForLevel(next);
     const pct = p.level >= levelCap() ? 100 : ((p.score - cur) / Math.max(1, nxt - cur)) * 100;
     const def = getDef(p);
-    const ranked = state.tanks.filter((t) => t.alive && !t.closer && !t.mothership && !t.dominator && !t.boss && !t.fodder).sort((a, b) => b.score - a.score).slice(0, 10);
+    const ranked = rankedTanks().slice(0, 10);
     const top = Math.max(1, ranked[0] ? ranked[0].score : 1);
     const free = skillPointsFor(p.level) - spentPoints(p);
     if (els.xpFill) els.xpFill.style.width = `${clamp(pct, 0, 100)}%`;
