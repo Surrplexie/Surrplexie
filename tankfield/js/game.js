@@ -2681,7 +2681,8 @@
       wreckDominator(tank, killer && killer.owner ? killer.owner : killer);
       return;
     }
-    const keepTankOnRespawn = tank.ai && rankedTanks(tank).slice(0, 10).includes(tank);
+    const wasTopTen = rankedTanks(tank).slice(0, 10).includes(tank);
+    const keepTankOnRespawn = tank.ai && Math.random() < (wasTopTen ? 0.8 : 0.2);
     tank.respawnClassId = keepTankOnRespawn ? tank.classId : null;
     tank.respawnCustomDef = keepTankOnRespawn && tank.customDef
       ? TankCatalog.cloneDef(tank.customDef)
