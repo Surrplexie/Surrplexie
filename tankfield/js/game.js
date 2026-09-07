@@ -5324,9 +5324,11 @@
     }
     if (els.skillPoints) els.skillPoints.textContent = state.spectating ? "" : (free > 0 ? `x${free}` : "");
     const teamRows = teamBoardRows();
-    const playerRows = ranked.map((t) =>
-      `<li class="${t === state.player ? "you" : ""} ${t === state.hunted ? "hunted" : ""}"><div class="lb-fill" style="width:${clamp((t.score / top) * 100, 8, 100)}%"></div><span><i class="lb-dot" style="background:${t.color}"></i>${escapeHtml(t.name)}${t === state.hunted ? " · hunted" : ""} — ${escapeHtml(getDef(t).name)} — ${formatScore(t.score)}</span></li>`
-    ).join("");
+    const playerRows = ranked.map((t) => {
+      const name = `${t.name}${t === state.hunted ? " · hunted" : ""}`;
+      const tankName = getDef(t).name;
+      return `<li class="${t === state.player ? "you" : ""} ${t === state.hunted ? "hunted" : ""}"><div class="lb-fill" style="width:${clamp((t.score / top) * 100, 8, 100)}%"></div><span><i class="lb-dot" style="background:${t.color}"></i><span class="lb-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span><span class="lb-tank" title="${escapeHtml(tankName)}">${escapeHtml(tankName)}</span><span class="lb-score">${formatScore(t.score)}</span></span></li>`;
+    }).join("");
     els.leaders.innerHTML = (teamRows
       ? teamRows.map((r) =>
         `<li class="team-tot" style="background:${r.color}"><span>${escapeHtml(r.label)}</span></li>`
@@ -6239,9 +6241,10 @@
     if (e.code) keys.delete(e.code.toLowerCase());
   });
   window.addEventListener("blur", () => keys.clear());
-  canvas.addEventListener("mousemove", pointerToGame);
-  canvas.addEventListener("pointermove", pointerToGame);
-  canvas.addEventListener("mousedown", (e) => {
+  window.addEventListener("pointermove", pointerToGame);
+  window.addEventListener("mousedown", (e) => {
+    pointerToGame(e);
+    if (!running || state.paused || state.spectating) return;
     if (e.button === 0) mouse.down = true;
     if (e.button === 2) mouse.right = true;
   });
@@ -6249,7 +6252,9 @@
     if (e.button === 0) mouse.down = false;
     if (e.button === 2) mouse.right = false;
   });
-  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  window.addEventListener("contextmenu", (e) => {
+    if (running && !state.paused && !state.spectating) e.preventDefault();
+  });
 
   let menuMode = "ffa";
   let menuTeam = "blue";

@@ -438,8 +438,7 @@ kbd {
   position: fixed;
   top: 10px;
   right: 12px;
-  min-width: 210px;
-  max-width: 280px;
+  width: min(280px, calc(var(--app-w) - 24px));
   z-index: 5;
 }
 
@@ -469,7 +468,9 @@ kbd {
   display: none;
 }
 
-#leader-list li.team-tot span {
+#leader-list li.team-tot > span {
+  display: block;
+  text-align: right;
   color: #fff;
 }
 
@@ -492,18 +493,35 @@ kbd {
   background: rgba(232, 176, 32, 0.55);
 }
 
-#leader-list li span {
+#leader-list li > span {
   position: relative;
   z-index: 1;
-  display: flex;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) minmax(0, 92px) 58px;
   align-items: center;
   gap: 6px;
+  width: 100%;
   padding: 1px 8px;
   font-size: 12px;
   white-space: nowrap;
+  text-shadow: 0 0 3px #000, 0 1px 2px #000;
+}
+
+.lb-name,
+.lb-tank {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-shadow: 0 0 3px #000, 0 1px 2px #000;
+}
+
+.lb-name,
+.lb-tank,
+.lb-score {
+  text-align: right;
+}
+
+.lb-score {
+  font-variant-numeric: tabular-nums;
 }
 
 .lb-dot {
