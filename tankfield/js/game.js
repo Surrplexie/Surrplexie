@@ -723,6 +723,25 @@
     return randomInWorld(180);
   }
 
+  function mazeCenterWanderPoint(tank) {
+    const center = isRoyale() ? stormCenter() : { x: WORLD.w * 0.5, y: WORLD.h * 0.5 };
+    const far = dist2(tank, center) > 1500 * 1500;
+    const radius = isRoyale()
+      ? Math.min(far ? 620 : 1050, Math.max(180, royaleRadius() * 0.5))
+      : (far ? 620 : 1050);
+    for (let i = 0; i < 30; i++) {
+      const a = rand(0, TAU);
+      const d = Math.sqrt(Math.random()) * radius;
+      const p = { x: center.x + Math.cos(a) * d, y: center.y + Math.sin(a) * d };
+      if (zoneAt(p.x, p.y)) continue;
+      if (royaleLocked() && !royaleInside(p, -80)) continue;
+      if (hitsWall(p.x, p.y, (tank.r || 22) + 16)) continue;
+      return p;
+    }
+    if (!hitsWall(center.x, center.y, (tank.r || 22) + 16)) return center;
+    return randomOpenNear(tank, 220, 680);
+  }
+
   function eachNearbyWall(x, y, r, fn) {
     const m = state.maze;
     if (m) {
@@ -833,8 +852,118 @@
     return Math.atan2(p.y - tank.y, p.x - tank.x);
   }
 
+  function nearestOpenMazeCell(m, row, col, radius) {
+    const r0 = clamp(row, 0, m.rows - 1);
+    const c0 = clamp(col, 0, m.cols - 1);
+    const open = (r, c) => {
+      if (r < 0 || c < 0 || r >= m.rows || c >= m.cols || m.filled[r][c]) return false;
+      const x = m.x0 + (c + 0.5) * m.cube;
+      const y = m.y0 + (r + 0.5) * m.cube;
+      return !hitsWall(x, y, radius);
+    };
+    if (open(r0, c0)) return { r: r0, c: c0 };
+    for (let ring = 1; ring <= 6; ring++) {
+      for (let dr = -ring; dr <= ring; dr++) {
+        for (let dc = -ring; dc <= ring; dc++) {
+          if (Math.abs(dr) !== ring && Math.abs(dc) !== ring) continue;
+          const r = r0 + dr;
+          const c = c0 + dc;
+          if (open(r, c)) return { r, c };
+        }
+      }
+    }
+    return null;
+  }
+
+  function buildMazePath(tank, tx, ty) {
+    const m = state.maze;
+    if (!m) return null;
+    const radius = (tank.r || 22) + 9;
+    const cellAt = (x, y) => ({
+      r: Math.floor((y - m.y0) / m.cube),
+      c: Math.floor((x - m.x0) / m.cube),
+    });
+    const a = cellAt(tank.x, tank.y);
+    const b = cellAt(tx, ty);
+    const start = nearestOpenMazeCell(m, a.r, a.c, radius);
+    const goal = nearestOpenMazeCell(m, b.r, b.c, radius);
+    if (!start || !goal) return null;
+    const total = m.rows * m.cols;
+    const startI = start.r * m.cols + start.c;
+    const goalI = goal.r * m.cols + goal.c;
+    const prev = new Int32Array(total);
+    prev.fill(-2);
+    const queue = new Int32Array(total);
+    let read = 0;
+    let write = 0;
+    queue[write++] = startI;
+    prev[startI] = -1;
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    while (read < write && prev[goalI] === -2) {
+      const at = queue[read++];
+      const r = Math.floor(at / m.cols);
+      const c = at % m.cols;
+      for (const [dr, dc] of dirs) {
+        const rr = r + dr;
+        const cc = c + dc;
+        if (rr < 0 || cc < 0 || rr >= m.rows || cc >= m.cols || m.filled[rr][cc]) continue;
+        const next = rr * m.cols + cc;
+        if (prev[next] !== -2) continue;
+        const x = m.x0 + (cc + 0.5) * m.cube;
+        const y = m.y0 + (rr + 0.5) * m.cube;
+        if (hitsWall(x, y, radius)) continue;
+        prev[next] = at;
+        queue[write++] = next;
+      }
+    }
+    if (prev[goalI] === -2) return null;
+    const path = [];
+    for (let at = goalI; at !== startI && at >= 0; at = prev[at]) {
+      const r = Math.floor(at / m.cols);
+      const c = at % m.cols;
+      path.push({ x: m.x0 + (c + 0.5) * m.cube, y: m.y0 + (r + 0.5) * m.cube });
+    }
+    path.reverse();
+    return { path, goalI };
+  }
+
+  function mazePathStep(tank, tx, ty) {
+    const m = state.maze;
+    if (!m || canSee(tank, { x: tx, y: ty })) {
+      tank.aiPath = null;
+      tank.aiPathIndex = 0;
+      return { x: tx, y: ty };
+    }
+    const goalR = clamp(Math.floor((ty - m.y0) / m.cube), 0, m.rows - 1);
+    const goalC = clamp(Math.floor((tx - m.x0) / m.cube), 0, m.cols - 1);
+    const goalKey = goalR * m.cols + goalC;
+    if (!tank.aiPath || tank.aiPathGoal !== goalKey || state.time >= (tank.aiPathUntil || 0)) {
+      const built = buildMazePath(tank, tx, ty);
+      tank.aiPath = built ? built.path : null;
+      tank.aiPathGoal = goalKey;
+      tank.aiPathIndex = 0;
+      tank.aiPathUntil = state.time + rand(0.65, 1.15);
+    }
+    const path = tank.aiPath;
+    if (!path || !path.length) return null;
+    let i = clamp(tank.aiPathIndex || 0, 0, path.length - 1);
+    while (i < path.length - 1 && dist2(tank, path[i]) < (m.cube * 0.36) ** 2) i++;
+    for (let j = Math.min(path.length - 1, i + 3); j > i; j--) {
+      if (canSee(tank, path[j])) {
+        i = j;
+        break;
+      }
+    }
+    tank.aiPathIndex = i;
+    return path[i];
+  }
+
   function steerAround(tank, tx, ty) {
     if (!state.walls.length || canSee(tank, { x: tx, y: ty })) return { x: tx, y: ty };
+    if (state.maze) {
+      const step = mazePathStep(tank, tx, ty);
+      if (step) return step;
+    }
     const dist = Math.hypot(tx - tank.x, ty - tank.y) || 1;
     const probe = Math.min(200, Math.max(90, dist * 0.45));
     const base = Math.atan2(ty - tank.y, tx - tank.x);
@@ -878,6 +1007,12 @@
     return target.aggroN || 0;
   }
 
+  function healthFraction(entity) {
+    if (!entity) return 1;
+    const max = Math.max(1, (entity.maxHealth || 0) + (entity.maxShield || 0));
+    return clamp(((entity.health || 0) + (entity.shield || 0)) / max, 0, 1);
+  }
+
   function rollBotBrain(bot) {
     if (!bot || !bot.ai) return bot;
     bot.orbitR = 190 + Math.random() * 280;
@@ -895,26 +1030,31 @@
     const now = state.time;
     const player = state.player;
     const hurt = tank.aiHurtBy;
-    if (hurt && hurt.alive && now - (tank.aiHurtT || 0) < 9 && isEnemyTank(tank, hurt)) {
-      if (dist2(tank, hurt) < (seeRange * 1.35) * (seeRange * 1.35)) return hurt;
-    }
-    if (tank.aiLock && tank.aiLock.alive && now < (tank.aiLockUntil || 0) && isEnemyTank(tank, tank.aiLock)) {
-      if (dist2(tank, tank.aiLock) < (seeRange * 1.25) * (seeRange * 1.25)) return tank.aiLock;
-    }
+    const hurtValid = !!(hurt && hurt.alive && now - (tank.aiHurtT || 0) < 9 && isEnemyTank(tank, hurt));
+    const lock = tank.aiLock;
+    const lockValid = !!(lock && lock.alive && now < (tank.aiLockUntil || 0) && isEnemyTank(tank, lock));
     let best = null;
     let bestS = -Infinity;
     const see2 = seeRange * seeRange;
+    const extended2 = (seeRange * 1.35) * (seeRange * 1.35);
+    const selfHp = healthFraction(tank);
     const onPlayer = player && player.alive ? aggroOn(player) : 99;
     for (const t of state.tanks) {
       if (!isEnemyTank(tank, t)) continue;
       const d2 = dist2(tank, t);
-      if (d2 > see2) continue;
+      const special = (hurtValid && t === hurt) || (lockValid && t === lock);
+      if (d2 > see2 && (!special || d2 > extended2)) continue;
       const seen = canSee(tank, t);
-      if (!seen && d2 > 480 * 480) continue;
+      if (!seen && d2 > (state.maze && special ? (seeRange * 1.25) ** 2 : 480 * 480)) continue;
       const d = Math.sqrt(d2) || 1;
-      let s = 1200 / d;
-      if (!seen) s *= 0.42;
+      const targetHp = healthFraction(t);
+      let s = 1400 / (d + 70);
+      s *= 1 + (1 - targetHp) * 1.45;
+      if (selfHp < 0.38) s *= 1 + clamp((seeRange - d) / seeRange, 0, 1) * (0.38 - selfHp) * 3.2;
+      if (!seen) s *= state.maze && special ? 0.52 : 0.3;
       s /= 1 + aggroOn(t) * 0.6;
+      if (hurtValid && t === hurt) s *= 1.42;
+      if (lockValid && t === lock) s *= 1.24;
       if (t === player) {
         if (tank.aiFocus === "farm" && d > 340) s *= 0.07;
         else if (!tank.aiHuntPlayer && d > 300) s *= 0.16;
@@ -2182,6 +2322,14 @@
       aiLockUntil: 0,
       aiHurtBy: null,
       aiHurtT: 0,
+      aiPath: null,
+      aiPathIndex: 0,
+      aiPathGoal: -1,
+      aiPathUntil: 0,
+      aiRecoverUntil: 0,
+      aiPrevX: null,
+      aiPrevY: null,
+      aiMoved: Infinity,
       aggroN: 0,
     };
     applyLevel(tank);
@@ -4564,6 +4712,11 @@
   }
 
   function updateAI(tank, dt) {
+    tank.aiMoved = tank.aiPrevX == null
+      ? Infinity
+      : Math.hypot(tank.x - tank.aiPrevX, tank.y - tank.aiPrevY);
+    tank.aiPrevX = tank.x;
+    tank.aiPrevY = tank.y;
     tank.aiT -= dt;
     if (tank.spawnProtect > 0 && !tank.closer && !tank.mothership && !tank.dominator) {
       tank.vx *= 0.15;
@@ -4762,6 +4915,12 @@
     const huntingMoth = state.mode === "protect" && foeMoth && tank.aiJob === "hunt";
     const ram = isRammer(tank);
     const maze = isMazeCombatMode();
+    if ((tank.aiRecoverUntil || 0) > state.time && tank.roamX != null && tank.roamY != null
+      && (tank.roamX - tank.x) ** 2 + (tank.roamY - tank.y) ** 2 < 150 * 150) {
+      tank.aiRecoverUntil = 0;
+      tank.aiT = 0;
+    }
+    const recovering = maze && (tank.aiRecoverUntil || 0) > state.time;
     const fightRange = maze
       ? (ram ? 520 : 640)
       : tank.aiFocus === "farm"
@@ -4772,15 +4931,17 @@
             ? 880
             : 640;
     const seeRange = maze ? 1100 : (state.mode === "tag" || state.mode === "protect" ? 2200 : 1400);
-    let enemy = hunting
-      ? pickAiEnemy(tank, maze ? 900 : (isTeamHunt() ? 3200 : 1600))
-      : huntingMoth
-        ? (pickAiEnemy(tank, 520) || foeMoth)
-        : pickAiEnemy(tank, seeRange);
+    let enemy = recovering
+      ? null
+      : hunting
+        ? pickAiEnemy(tank, maze ? 900 : (isTeamHunt() ? 3200 : 1600))
+        : huntingMoth
+          ? (pickAiEnemy(tank, 520) || foeMoth)
+          : pickAiEnemy(tank, seeRange);
     const heard = maze || enemy ? null : nearest(tank, state.tanks, 3200, (t) => isEnemyTank(tank, t));
-    if (isTeamHunt() && hunting && mark && mark.alive && !spawnProtected(mark)) {
+    if (!recovering && isTeamHunt() && hunting && mark && mark.alive && !spawnProtected(mark)) {
       enemy = mark;
-    } else if (hunting && mark && !spawnProtected(mark) && canSee(tank, mark) && (aggroOn(mark) < 5 || tank.aiHurtBy === mark)) {
+    } else if (!recovering && hunting && mark && !spawnProtected(mark) && canSee(tank, mark) && (aggroOn(mark) < 5 || tank.aiHurtBy === mark)) {
       const melee = nearestSeen(tank, state.tanks, 420, (t) => isEnemyTank(tank, t) && t !== mark);
       if (!melee) enemy = mark;
     }
@@ -4801,11 +4962,13 @@
     else if (stormOut) tank.aiState = "storm";
     else if (invading || ((state.mode === "tdm" || isFourTeamMode()) && tank.team && low)) tank.aiState = "home";
     else if (huntedSelf && hunterNear && dist2(tank, hunterNear) < 480 * 480) tank.aiState = "flee";
+    else if (recovering) tank.aiState = "wander";
     else if (low && enemy && state.mode !== "tag" && !huntingMoth) tank.aiState = "flee";
     else if ((hunting && mark && enemy === mark) || (state.mode === "tag" && enemy) || (huntingMoth && foeMoth)) tank.aiState = "attack";
     else if (defending && enemy && dist2(tank, enemy) < 720 * 720) tank.aiState = "attack";
     else if (defending) tank.aiState = "defend";
     else if (healAlly && (!enemy || dist2(tank, healAlly) < dist2(tank, enemy) || healAlly.health < healAlly.maxHealth * 0.55)) tank.aiState = "heal";
+    else if (maze && enemy && dist2(tank, enemy) < fightRange * fightRange) tank.aiState = "attack";
     else if (tank.aiFocus === "farm" && shape && (!enemy || dist2(tank, enemy) > 300 * 300) && dist2(tank, shape) < 560 * 560 && (!maze || canSee(tank, shape))) tank.aiState = "farm";
     else if (maze && enemy) tank.aiState = "attack";
     else if (enemy && dist2(tank, enemy) < fightRange * fightRange) tank.aiState = "attack";
@@ -4832,7 +4995,7 @@
       }
     }
 
-    if (state.mode === "assault" && tank.team && tank.aiState !== "flee" && tank.aiState !== "attack" && tank.aiState !== "heal") {
+    if (state.mode === "assault" && !recovering && tank.team && tank.aiState !== "flee" && tank.aiState !== "attack" && tank.aiState !== "heal") {
       if (tank.team === "green") {
         const wreck = nearest(tank, state.tanks, 2800, (t) => t.dominator && t.destroyed);
         const keep = nearest(tank, state.tanks, 2800, (t) => t.dominator && !t.destroyed && t.team === "green");
@@ -4917,8 +5080,12 @@
       if (lock && canSee(tank, lock)) tank.angle = aimAt(tank, lock, st);
       else tank.angle = Math.atan2(ty - tank.y, tx - tank.x);
     } else if (tank.aiState === "attack" && enemy) {
+      const enemySeen = canSee(tank, enemy);
       const ez = zoneAt(enemy.x, enemy.y);
-      if (ez && ez === enemy.team) {
+      if (maze && !enemySeen) {
+        tx = enemy.x;
+        ty = enemy.y;
+      } else if (ez && ez === enemy.team) {
         const edge = baseCenter(ez);
         tx = ez === "blue" ? BASE_W + 140 : ez === "red" ? WORLD.w - BASE_W - 140 : edge.x;
         ty = ez === "green" ? BASE_W + 140 : ez === "purple" ? WORLD.h - BASE_W - 140 : enemy.y;
@@ -4957,7 +5124,7 @@
       const steered = steerAround(tank, parked.x, parked.y);
       tx = steered.x;
       ty = steered.y;
-      tank.angle = aimAt(tank, enemy, st);
+      tank.angle = enemySeen ? aimAt(tank, enemy, st) : Math.atan2(ty - tank.y, tx - tank.x);
     } else if (tank.aiState === "defend" && ownMoth) {
       const a = (tank.wanderA || 0) + state.time * 0.55;
       tx = ownMoth.x + Math.cos(a) * 250;
@@ -5007,7 +5174,10 @@
     } else if (tank.aiT <= 0) {
       tank.aiT = rand(2.2, 5.5);
       if (maze) {
-        const p = randomOpenNear(tank, 220, 640);
+        const center = isRoyale() ? stormCenter() : { x: WORLD.w * 0.5, y: WORLD.h * 0.5 };
+        const favorCenter = state.mode !== "assault"
+          && (dist2(tank, center) > 1400 * 1400 || Math.random() < 0.72);
+        const p = favorCenter ? mazeCenterWanderPoint(tank) : randomOpenNear(tank, 220, 640);
         tank.roamX = p.x;
         tank.roamY = p.y;
       } else if (tank.aiHunt === "mid" || Math.random() < 0.42) {
@@ -5022,7 +5192,9 @@
     }
     if (tank.aiState === "wander") {
       if (tank.roamX == null || tank.roamY == null) {
-        const mid = maze ? randomOpenNear(tank, 180, 520) : (isRoyale() ? nestPos(Math.max(180, royaleRadius() * 0.6)) : nestPos(900));
+        const mid = maze
+          ? (state.mode === "assault" ? randomOpenNear(tank, 180, 520) : mazeCenterWanderPoint(tank))
+          : (isRoyale() ? nestPos(Math.max(180, royaleRadius() * 0.6)) : nestPos(900));
         tank.roamX = mid.x;
         tank.roamY = mid.y;
       }
@@ -5050,8 +5222,10 @@
     const ang = Math.atan2(ty - tank.y, tx - tank.x);
     tank.vx += Math.cos(ang) * pace * 62 * dt;
     tank.vy += Math.sin(ang) * pace * 62 * dt;
-    const slow = Math.hypot(tank.vx, tank.vy) < 20;
-    if ((maze && slow) || (nearMapEdge(tank, 150) && slow && tank.aiState === "attack")) {
+    const desiredD2 = (tx - tank.x) ** 2 + (ty - tank.y) ** 2;
+    const minProgress = Math.max(0.35, Math.min(1.2, Math.hypot(tank.vx, tank.vy) * dt * 0.18));
+    const stalled = desiredD2 > 120 * 120 && tank.aiMoved < minProgress;
+    if ((maze && stalled) || (nearMapEdge(tank, 150) && stalled && tank.aiState === "attack")) {
       tank.stuckT = (tank.stuckT || 0) + dt;
       if (tank.stuckT > 0.3) {
         tank.stuckT = 0;
@@ -5059,15 +5233,20 @@
         tank.strafeDir = -(tank.strafeDir || 1);
         tank.aiLock = null;
         tank.aiLockUntil = 0;
+        tank.aiPath = null;
+        tank.aiPathIndex = 0;
+        tank.aiPathGoal = -1;
+        tank.aiPathUntil = 0;
         const inward = clampArena(
           tank.x + (WORLD.w * 0.5 - tank.x) * 0.48 + rand(-340, 340),
           tank.y + (WORLD.h * 0.5 - tank.y) * 0.48 + rand(-340, 340),
           280
         );
         if (maze) {
-          const p = randomOpenNear(tank, 120, 420);
+          const p = state.mode === "assault" ? randomOpenNear(tank, 120, 420) : mazeCenterWanderPoint(tank);
           tank.roamX = p.x;
           tank.roamY = p.y;
+          tank.aiRecoverUntil = state.time + rand(1.2, 2.2);
         } else {
           tank.roamX = inward.x;
           tank.roamY = inward.y;
