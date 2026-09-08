@@ -7,6 +7,8 @@
   const TAU = Math.PI * 2;
   const STAT_MAX = 9;
   const LEVEL_CAP = 45;
+  const MAX_NICK_LENGTH = 25;
+  const MAX_DEV_SCORE = 1_000_000_000_000;
   const BASE_MOVE = 23.2;
   const SPEED_CAP = 110;
   const ARRAS_TICK = 30;
@@ -164,10 +166,19 @@
     spectateAgain: document.getElementById("spectate-again"),
     spectateMenu: document.getElementById("spectate-menu"),
     notes: document.getElementById("notes"),
+    devCli: document.getElementById("dev-cli"),
+    devCliOutput: document.getElementById("dev-cli-output"),
+    devCliInput: document.getElementById("dev-cli-input"),
   };
 
   const keys = new Set();
   const mouse = { x: 0, y: 0, down: false, right: false };
+  const devChordKeys = new Set();
+  const devHistory = [];
+  let devHistoryIndex = 0;
+  let devChordLatched = false;
+  let devMoveEnabled = false;
+  let devDrag = null;
   let dpr = 1;
   let width = 0;
   let height = 0;
@@ -230,6 +241,9 @@
   function irand(a, b) { return (Math.random() * (b - a + 1) + a) | 0; }
   function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
   function lerp(a, b, t) { return a + (b - a) * t; }
+  function trimNick(value, fallback = "") {
+    return String(value || "").trim().slice(0, MAX_NICK_LENGTH) || fallback;
+  }
   function pickTeamColor(except) {
     const pool = TEAM_COLORS.filter((c) => c.hex !== except);
     const list = pool.length ? pool : TEAM_COLORS;
@@ -2079,7 +2093,7 @@
     const tank = {
       type: "tank",
       id: opts.id || Math.random().toString(36).slice(2),
-      name: opts.name || "Tank",
+      name: trimNick(opts.name, "Tank"),
       x: pos.x,
       y: pos.y,
       vx: 0,
@@ -2135,8 +2149,8 @@
     return tank;
   }
 
-  function applyLevel(tank) {
-    if ((state.mode === "growth" || state.armsRace) && tank && !tank.closer && !tank.mothership && !tank.dominator && !tank.boss && !tank.fodder) {
+  function applyLevel(tank, allowBelowFloor = false) {
+    if (!allowBelowFloor && tank && !tank.devScoreOverrideFloor && (state.mode === "growth" || state.armsRace) && !tank.closer && !tank.mothership && !tank.dominator && !tank.boss && !tank.fodder) {
       tank.score = Math.max(Number(tank.score) || 0, xpForLevel(LEVEL_CAP));
     }
     const next = levelFromScore(tank.score);
@@ -2515,7 +2529,8 @@
 
   function startGame(name, opts = {}) {
     try {
-    state.spawnName = name || "Unnamed Tank";
+    resetDevCli();
+    state.spawnName = trimNick(name, "Unnamed Tank");
     state.playOpts = opts;
     const parsed = parseArmsKey(opts.sandbox ? "sandbox" : (opts.mode || "ffa"), opts.armsRace);
     state.mode = opts.sandbox ? "sandbox" : parsed.mode;
@@ -2677,6 +2692,11 @@
 
   function killTank(tank, killer, cause) {
     if (!tank || tank.deadHandled) return;
+    if (tank.devGod && tank.alive) {
+      tank.health = tank.maxHealth;
+      tank.shield = tank.maxShield || 0;
+      return;
+    }
     if (tank.dominator) {
       wreckDominator(tank, killer && killer.owner ? killer.owner : killer);
       return;
@@ -3243,6 +3263,384 @@
     else els.spectateLabel.textContent = "Free camera  ·  WASD · scroll zoom";
   }
 
+  function devCliOpen() {
+    return !!(els.devCli && !els.devCli.classList.contains("hidden"));
+  }
+
+  function devLog(text, type = "") {
+    if (!els.devCliOutput) return;
+    const line = document.createElement("div");
+    line.className = `dev-cli-line${type ? ` ${type}` : ""}`;
+    line.textContent = String(text);
+    els.devCliOutput.appendChild(line);
+    while (els.devCliOutput.children.length > 80) els.devCliOutput.firstElementChild.remove();
+    els.devCliOutput.scrollTop = els.devCliOutput.scrollHeight;
+  }
+
+  function setDevCliOpen(open) {
+    if (!els.devCli) return;
+    const next = !!open && running && !state.spectating;
+    els.devCli.classList.toggle("hidden", !next);
+    els.devCli.setAttribute("aria-hidden", next ? "false" : "true");
+    if (next && els.devCliInput) {
+      if (!els.devCliOutput.children.length) devLog("Tankfield dev CLI. Type /help for commands.");
+      mouse.down = false;
+      mouse.right = false;
+      requestAnimationFrame(() => els.devCliInput.focus());
+    } else if (els.devCliInput) {
+      els.devCliInput.blur();
+    }
+  }
+
+  function resetDevCli() {
+    setDevCliOpen(false);
+    devMoveEnabled = false;
+    devDrag = null;
+    devHistory.length = 0;
+    devHistoryIndex = 0;
+    devChordKeys.clear();
+    devChordLatched = false;
+    document.body.classList.remove("dev-move");
+    if (els.devCliOutput) els.devCliOutput.textContent = "";
+    if (els.devCliInput) els.devCliInput.value = "";
+  }
+
+  function tokenizeDevCommand(line) {
+    const out = [];
+    const re = /"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)'|[^\s]+/g;
+    let match;
+    while ((match = re.exec(String(line || "")))) {
+      const value = match[1] != null ? match[1] : match[2] != null ? match[2] : match[0];
+      out.push(value.replace(/\\(["'\\])/g, "$1"));
+    }
+    return out;
+  }
+
+  function liveDevTanks() {
+    return state.tanks.filter((t) => t && t.alive);
+  }
+
+  function devMovableEntities() {
+    return [
+      ...liveDevTanks(),
+      ...state.shapes.filter((s) => s && s.alive),
+      ...state.bullets.filter((b) => b && b.alive),
+      ...state.doms,
+      ...state.walls,
+    ];
+  }
+
+  function resolveDevTanks(selector) {
+    const key = String(selector || "").trim().toLowerCase();
+    if (key === "@s") return state.player && state.player.alive ? [state.player] : [];
+    if (key === "@a" || key === "@e") return liveDevTanks();
+    return liveDevTanks().filter((t) => String(t.name || "").toLowerCase() === key);
+  }
+
+  function resolveDevEntities(selector) {
+    const key = String(selector || "").trim().toLowerCase();
+    if (key === "@e") return devMovableEntities();
+    if (key === "@a") return liveDevTanks();
+    if (key === "@s") return state.player && state.player.alive ? [state.player] : [];
+    return resolveDevTanks(selector);
+  }
+
+  function requireDevTargets(selector, entities = false) {
+    if (!selector) throw new Error("Missing target. Use @s, @a, @e, or a tank name.");
+    const targets = entities ? resolveDevEntities(selector) : resolveDevTanks(selector);
+    if (!targets.length) throw new Error(`No target matched "${selector}".`);
+    return targets;
+  }
+
+  function devEntityCenter(entity) {
+    if (state.walls.includes(entity)) return { x: entity.x + entity.w * 0.5, y: entity.y + entity.h * 0.5 };
+    return { x: Number(entity.x) || 0, y: Number(entity.y) || 0 };
+  }
+
+  function moveDevEntity(entity, x, y) {
+    if (state.walls.includes(entity)) {
+      entity.x = clamp(x - entity.w * 0.5, 0, WORLD.w - entity.w);
+      entity.y = clamp(y - entity.h * 0.5, 0, WORLD.h - entity.h);
+      return;
+    }
+    const r = Math.max(0, Number(entity.r) || 0);
+    entity.x = clamp(x, r, WORLD.w - r);
+    entity.y = clamp(y, r, WORLD.h - r);
+    if ("vx" in entity) entity.vx = 0;
+    if ("vy" in entity) entity.vy = 0;
+    if (entity.dominator) {
+      entity.homeX = entity.x;
+      entity.homeY = entity.y;
+    }
+  }
+
+  function devTargetCenter(selector) {
+    const targets = requireDevTargets(selector, true);
+    const sum = targets.reduce((p, target) => {
+      const pos = devEntityCenter(target);
+      p.x += pos.x;
+      p.y += pos.y;
+      return p;
+    }, { x: 0, y: 0 });
+    return { x: sum.x / targets.length, y: sum.y / targets.length };
+  }
+
+  const DEV_HELP = {
+    help: "/help or /help command - show command help",
+    tp: "/tp source destination - teleport entities",
+    gm: "/gm target - toggle god mode",
+    score: "/score target set|add|remove number - change score",
+    mov: "/mov - toggle click-drag entity movement",
+    heal: "/heal target - restore health and shield",
+    kill: "/kill target - destroy tanks normally",
+    tank: "/tank target classId - change tank class",
+    team: "/team target blue|red|green|purple|boss|none",
+    spawn: "/spawn square|triangle|pentagon|alpha|crasher count",
+    clear: "/clear bullets|shapes|effects",
+    rename: "/rename target newName - quotes allow spaces",
+    color: "/color target #rrggbb - set body color",
+  };
+
+  function executeDevCommand(raw) {
+    const tokens = tokenizeDevCommand(raw);
+    if (!tokens.length) return;
+    const command = tokens.shift().replace(/^\/+/, "").toLowerCase();
+    const arg = (i) => tokens[i];
+    try {
+      if (command === "help") {
+        const topic = String(arg(0) || "").replace(/^\/+/, "").toLowerCase();
+        if (topic) {
+          if (!DEV_HELP[topic]) throw new Error(`Unknown command "${topic}".`);
+          devLog(DEV_HELP[topic]);
+        } else {
+          devLog(Object.values(DEV_HELP).join("\n"));
+          devLog("Selectors: @s self, @a all tanks, @e every movable entity.");
+        }
+        return;
+      }
+      if (command === "tp") {
+        const targets = requireDevTargets(arg(0), true);
+        const destination = devTargetCenter(arg(1));
+        for (const target of targets) moveDevEntity(target, destination.x, destination.y);
+        devLog(`Teleported ${targets.length} target${targets.length === 1 ? "" : "s"}.`);
+        return;
+      }
+      if (command === "gm") {
+        const targets = requireDevTargets(arg(0));
+        const enable = targets.some((t) => !t.devGod);
+        for (const tank of targets) {
+          tank.devGod = enable;
+          if (enable) {
+            tank.health = tank.maxHealth;
+            tank.shield = tank.maxShield || 0;
+          }
+        }
+        devLog(`God mode ${enable ? "enabled" : "disabled"} for ${targets.length} tank${targets.length === 1 ? "" : "s"}.`);
+        return;
+      }
+      if (command === "score") {
+        const targets = requireDevTargets(arg(0));
+        const operation = String(arg(1) || "").toLowerCase();
+        const rawAmount = String(arg(2) == null ? "" : arg(2)).trim();
+        const amount = Number(rawAmount.replace(/,/g, ""));
+        if (!["set", "add", "remove"].includes(operation) || !rawAmount || !Number.isFinite(amount)) {
+          throw new Error(DEV_HELP.score);
+        }
+        for (const tank of targets) {
+          const current = Number(tank.score) || 0;
+          const next = operation === "set" ? amount : operation === "add" ? current + amount : current - amount;
+          tank.score = clamp(next, 0, MAX_DEV_SCORE);
+          tank.devScoreOverrideFloor = true;
+          applyLevel(tank, true);
+          tank.health = Math.min(tank.health, tank.maxHealth);
+          tank.shield = Math.min(tank.shield || 0, tank.maxShield || 0);
+        }
+        try { renderStats(); renderClassPanel(); } catch (err) {}
+        devLog(`Updated score for ${targets.length} tank${targets.length === 1 ? "" : "s"}.`);
+        return;
+      }
+      if (command === "mov") {
+        devMoveEnabled = !devMoveEnabled;
+        if (!devMoveEnabled) devDrag = null;
+        document.body.classList.toggle("dev-move", devMoveEnabled);
+        devLog(`Move mode ${devMoveEnabled ? "enabled" : "disabled"}. Close the CLI, then drag entities.`);
+        return;
+      }
+      if (command === "heal") {
+        const targets = requireDevTargets(arg(0));
+        for (const tank of targets) {
+          tank.health = tank.maxHealth;
+          tank.shield = tank.maxShield || 0;
+        }
+        devLog(`Healed ${targets.length} tank${targets.length === 1 ? "" : "s"}.`);
+        return;
+      }
+      if (command === "kill") {
+        const targets = requireDevTargets(arg(0));
+        for (const tank of targets) {
+          tank.devGod = false;
+          tank.health = 0;
+          killTank(tank, null, "a developer command");
+        }
+        devLog(`Destroyed ${targets.length} tank${targets.length === 1 ? "" : "s"}.`);
+        return;
+      }
+      if (command === "tank") {
+        const targets = requireDevTargets(arg(0));
+        const classId = String(arg(1) || "").toLowerCase();
+        if (!TankCatalog.tanks[classId]) throw new Error(`Unknown tank class "${classId}".`);
+        for (const tank of targets) {
+          tank.classId = classId;
+          tank.customDef = null;
+          clearOwnedShots(tank);
+          applyLevel(tank, true);
+          tank.health = Math.min(tank.health, tank.maxHealth);
+          tank.shield = Math.min(tank.shield || 0, tank.maxShield || 0);
+        }
+        devLog(`Changed ${targets.length} tank${targets.length === 1 ? "" : "s"} to ${TankCatalog.get(classId).name}.`);
+        return;
+      }
+      if (command === "team") {
+        const targets = requireDevTargets(arg(0));
+        const teamId = String(arg(1) || "").toLowerCase();
+        if (teamId !== "none" && !TEAMS[teamId]) throw new Error(DEV_HELP.team);
+        for (const tank of targets) {
+          tank.team = teamId === "none" ? null : teamId;
+          tank.color = teamId === "none" ? pickTeamColor(tank.color) : TEAMS[teamId].color;
+          for (const bullet of state.bullets) if (bullet.owner === tank) bullet.color = tank.color;
+        }
+        devLog(`Changed team for ${targets.length} tank${targets.length === 1 ? "" : "s"}.`);
+        return;
+      }
+      if (command === "spawn") {
+        const kind = String(arg(0) || "").toLowerCase();
+        const count = clamp(Math.floor(Number(arg(1) == null ? 1 : arg(1))), 1, 100);
+        if (!["square", "triangle", "pentagon", "alpha", "crasher"].includes(kind) || !Number.isFinite(count)) {
+          throw new Error(DEV_HELP.spawn);
+        }
+        const at = screenToWorld(mouse.x, mouse.y);
+        for (let i = 0; i < count; i++) {
+          state.shapes.push(createShape(kind, {
+            x: clamp(at.x + rand(-30, 30), 30, WORLD.w - 30),
+            y: clamp(at.y + rand(-30, 30), 30, WORLD.h - 30),
+          }));
+        }
+        devLog(`Spawned ${count} ${kind}${count === 1 ? "" : "s"}.`);
+        return;
+      }
+      if (command === "clear") {
+        const type = String(arg(0) || "").toLowerCase();
+        if (type === "bullets") state.bullets = [];
+        else if (type === "shapes") state.shapes = [];
+        else if (type === "effects") {
+          state.particles = [];
+          state.floaters = [];
+        } else throw new Error(DEV_HELP.clear);
+        devLog(`Cleared ${type}.`);
+        return;
+      }
+      if (command === "rename") {
+        const targets = requireDevTargets(arg(0));
+        const name = trimNick(tokens.slice(1).join(" "));
+        if (!name) throw new Error(DEV_HELP.rename);
+        for (const tank of targets) {
+          tank.name = name;
+          if (tank === state.player) state.spawnName = name;
+        }
+        devLog(`Renamed ${targets.length} tank${targets.length === 1 ? "" : "s"} to ${name}.`);
+        return;
+      }
+      if (command === "color") {
+        const targets = requireDevTargets(arg(0));
+        let color = String(arg(1) || "").trim();
+        if (!/^#?[0-9a-f]{3}(?:[0-9a-f]{3})?$/i.test(color)) throw new Error(DEV_HELP.color);
+        if (!color.startsWith("#")) color = `#${color}`;
+        for (const tank of targets) {
+          tank.color = color;
+          for (const bullet of state.bullets) if (bullet.owner === tank) bullet.color = color;
+        }
+        devLog(`Changed color for ${targets.length} tank${targets.length === 1 ? "" : "s"}.`);
+        return;
+      }
+      throw new Error(`Unknown command "/${command}". Type /help.`);
+    } catch (err) {
+      devLog(err && err.message ? err.message : String(err), "error");
+    }
+  }
+
+  function pickDevEntityAt(x, y) {
+    let best = null;
+    let bestD = Infinity;
+    const circles = [
+      ...liveDevTanks(),
+      ...state.shapes.filter((s) => s && s.alive),
+      ...state.bullets.filter((b) => b && b.alive),
+      ...state.doms,
+    ];
+    for (const entity of circles) {
+      const dx = x - entity.x;
+      const dy = y - entity.y;
+      const reach = Math.max(10, Number(entity.r) || 0) + 14;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= reach * reach && d2 < bestD) {
+        best = entity;
+        bestD = d2;
+      }
+    }
+    if (best) return best;
+    for (let i = state.walls.length - 1; i >= 0; i--) {
+      const wall = state.walls[i];
+      if (x >= wall.x && x <= wall.x + wall.w && y >= wall.y && y <= wall.y + wall.h) return wall;
+    }
+    return null;
+  }
+
+  function beginDevDrag() {
+    if (!devMoveEnabled || devCliOpen()) return false;
+    const world = screenToWorld(mouse.x, mouse.y);
+    const entity = pickDevEntityAt(world.x, world.y);
+    if (!entity) return false;
+    if (state.walls.includes(entity) && state.maze) state.maze = null;
+    const center = devEntityCenter(entity);
+    devDrag = { entity, dx: world.x - center.x, dy: world.y - center.y };
+    moveDevEntity(entity, center.x, center.y);
+    return true;
+  }
+
+  function updateDevDrag() {
+    if (!devDrag || !devMoveEnabled) return;
+    const entity = devDrag.entity;
+    if ((entity.alive === false) || (!devMovableEntities().includes(entity))) {
+      devDrag = null;
+      return;
+    }
+    const world = screenToWorld(mouse.x, mouse.y);
+    moveDevEntity(entity, world.x - devDrag.dx, world.y - devDrag.dy);
+  }
+
+  function handleDevChord(e, down) {
+    const relevant = e.code === "ShiftLeft" || e.code === "ShiftRight" || e.code === "Slash" || e.code === "BracketRight";
+    if (!relevant) return false;
+    if (down) {
+      devChordKeys.add(e.code);
+      keys.add(String(e.key || "").toLowerCase());
+      keys.add(String(e.code || "").toLowerCase());
+    } else {
+      devChordKeys.delete(e.code);
+    }
+    const shift = devChordKeys.has("ShiftLeft") || devChordKeys.has("ShiftRight");
+    const complete = shift && devChordKeys.has("Slash") && devChordKeys.has("BracketRight");
+    if (complete && !devChordLatched && running && !state.spectating) {
+      devChordLatched = true;
+      if (devCliOpen() && els.devCliInput) els.devCliInput.value = "";
+      setDevCliOpen(!devCliOpen());
+    }
+    if (!complete) devChordLatched = false;
+    if (!down || !running) return false;
+    if (e.target === els.devCliInput) return complete;
+    return true;
+  }
+
   function setUserPaused(on) {
     state.userPaused = !!on;
     const ws = document.getElementById("workshop");
@@ -3254,6 +3652,7 @@
 
   function goToMenu() {
     running = false;
+    resetDevCli();
     state.userPaused = false;
     state.paused = false;
     state.spectating = false;
@@ -3272,6 +3671,10 @@
   }
 
   function handleEscape(e) {
+    if (devCliOpen()) {
+      setDevCliOpen(false);
+      return;
+    }
     const tag = (e.target && e.target.tagName) || "";
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
       e.target.blur();
@@ -4730,6 +5133,11 @@
 
   function damage(target, amount, src) {
     if (!target.alive) return;
+    if (target.type === "tank" && target.devGod) {
+      target.health = target.maxHealth;
+      target.shield = target.maxShield || 0;
+      return;
+    }
     if (target.dominator && target.destroyed) return;
     if (target.closer && src && (src.closer || (src.owner && src.owner.closer))) return;
     if (tryTagHit(target, src)) return;
@@ -4889,7 +5297,10 @@
       if (tank.spawnProtect > 0) tank.spawnProtect = Math.max(0, tank.spawnProtect - dt);
       const invading = tank.team && zoneAt(tank.x, tank.y) && zoneAt(tank.x, tank.y) !== tank.team;
       const inStorm = isRoyale() && royaleLocked() && !royaleInside(tank);
-      if (tank.dominator && tank.destroyed) {
+      if (tank.devGod && !(tank.dominator && tank.destroyed)) {
+        tank.health = tank.maxHealth;
+        tank.shield = tank.maxShield || 0;
+      } else if (tank.dominator && tank.destroyed) {
         tank.health = 0;
       } else if (invading || inStorm) {
         const siegeKill = state.mode === "siege" && invading && tank.team !== "boss" && !tank.fodder && !tank.sanctuary && !tank.dominator && !tank.closer;
@@ -5140,6 +5551,7 @@
       f.y -= 28 * dt;
     }
 
+    updateDevDrag();
     state.bullets = state.bullets.filter((b) => b.alive);
     state.shapes = state.shapes.filter((s) => s.alive);
     state.tanks = state.tanks.filter((t) => t.alive || t === state.player);
@@ -6177,11 +6589,36 @@
     e.preventDefault();
     e.returnValue = "";
   });
+  if (els.devCliInput) {
+    els.devCliInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const raw = els.devCliInput.value.trim();
+        if (!raw) return;
+        devLog(`> ${raw}`, "command");
+        if (devHistory[devHistory.length - 1] !== raw) devHistory.push(raw);
+        if (devHistory.length > 50) devHistory.shift();
+        devHistoryIndex = devHistory.length;
+        els.devCliInput.value = "";
+        executeDevCommand(raw);
+      } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        if (!devHistory.length) return;
+        devHistoryIndex = clamp(devHistoryIndex + (e.key === "ArrowUp" ? -1 : 1), 0, devHistory.length);
+        els.devCliInput.value = devHistoryIndex < devHistory.length ? devHistory[devHistoryIndex] : "";
+        requestAnimationFrame(() => els.devCliInput.setSelectionRange(els.devCliInput.value.length, els.devCliInput.value.length));
+      }
+    });
+  }
   window.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && (
       ["+", "-", "=", "_", "0"].includes(e.key)
       || ["Equal", "Minus", "Digit0", "NumpadAdd", "NumpadSubtract", "Numpad0"].includes(e.code)
     )) {
+      e.preventDefault();
+      return;
+    }
+    if (handleDevChord(e, true)) {
       e.preventDefault();
       return;
     }
@@ -6244,18 +6681,34 @@
     if (running && !state.paused && e.key === "0") tryUpgrade(STATS[9].key, keys.has("m"));
   });
   window.addEventListener("keyup", (e) => {
+    handleDevChord(e, false);
     keys.delete(e.key.toLowerCase());
     if (e.code) keys.delete(e.code.toLowerCase());
   });
-  window.addEventListener("blur", () => keys.clear());
-  window.addEventListener("pointermove", pointerToGame);
+  window.addEventListener("blur", () => {
+    keys.clear();
+    devChordKeys.clear();
+    devChordLatched = false;
+    devDrag = null;
+  });
+  window.addEventListener("pointermove", (e) => {
+    pointerToGame(e);
+    updateDevDrag();
+  });
   window.addEventListener("mousedown", (e) => {
+    if (e.target && e.target.closest && e.target.closest("#dev-cli-input")) return;
     pointerToGame(e);
     if (!running || state.paused || state.spectating) return;
+    if (e.button === 0 && beginDevDrag()) {
+      e.preventDefault();
+      mouse.down = false;
+      return;
+    }
     if (e.button === 0) mouse.down = true;
     if (e.button === 2) mouse.right = true;
   });
   window.addEventListener("mouseup", (e) => {
+    if (e.button === 0) devDrag = null;
     if (e.button === 0) mouse.down = false;
     if (e.button === 2) mouse.right = false;
   });
@@ -6295,11 +6748,11 @@
   };
 
   function saveName(name) {
-    try { localStorage.setItem("tankfield-name", String(name || "").slice(0, 16)); } catch (err) {}
+    try { localStorage.setItem("tankfield-name", trimNick(name)); } catch (err) {}
   }
 
   function playSelected() {
-    const name = (els.name && els.name.value.trim()) || "Unnamed Tank";
+    const name = trimNick(els.name && els.name.value, "Unnamed Tank");
     saveName(name);
     const bots = menuBotCount;
     if (menuMode === "sandbox") {
@@ -6451,7 +6904,7 @@
   initColorPicker();
   try {
     const savedName = localStorage.getItem("tankfield-name");
-    if (savedName && els.name) els.name.value = savedName.slice(0, 16);
+    if (savedName && els.name) els.name.value = trimNick(savedName);
   } catch (err) {}
   function refreshBotCounts() {
     const n = menuBotCount;

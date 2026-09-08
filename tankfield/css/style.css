@@ -26,6 +26,16 @@ html, body {
   cursor: crosshair;
 }
 
+body.dev-move #game,
+body.dev-move #hud {
+  cursor: grab;
+}
+
+body.dev-move:active #game,
+body.dev-move:active #hud {
+  cursor: grabbing;
+}
+
 .hidden {
   display: none !important;
 }
@@ -434,6 +444,77 @@ kbd {
   font-family: inherit;
 }
 
+#dev-cli {
+  position: fixed;
+  left: 12px;
+  bottom: 224px;
+  z-index: 10;
+  width: min(380px, calc(var(--app-w) - 24px));
+  padding: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 7px;
+  background: rgba(48, 50, 53, 0.68);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.24);
+  color: #f1f1f1;
+  font: 11px/1.35 Consolas, "Courier New", monospace;
+  pointer-events: none;
+}
+
+#dev-cli-output {
+  max-height: 112px;
+  min-height: 28px;
+  margin-bottom: 5px;
+  overflow: hidden auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.dev-cli-line {
+  margin: 1px 0;
+}
+
+.dev-cli-line.error {
+  color: #ffb0b0;
+}
+
+.dev-cli-line.command {
+  color: #d4edb8;
+}
+
+.dev-cli-prompt {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+#dev-cli-input {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 4px;
+  outline: none;
+  background: rgba(18, 19, 21, 0.72);
+  color: #fff;
+  font: inherit;
+  pointer-events: auto;
+  user-select: text;
+}
+
+#dev-cli-input:focus {
+  border-color: rgba(166, 220, 126, 0.9);
+  box-shadow: 0 0 0 1px rgba(138, 188, 63, 0.38);
+}
+
+.dev-cli-hint {
+  margin-top: 4px;
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 9px;
+  text-align: right;
+}
+
 #scoreboard {
   position: fixed;
   top: 10px;
@@ -496,7 +577,7 @@ kbd {
   font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   color: #fff;
   text-shadow: 0 0 3px #000, 0 1px 2px #000;
 }
@@ -540,7 +621,7 @@ kbd {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
   text-align: center;
   font-variant-numeric: tabular-nums;
