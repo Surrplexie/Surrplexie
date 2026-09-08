@@ -1108,7 +1108,7 @@
   }
 
   function buildMaze() {
-    if (state.mode === "royalemaze") {
+    if (state.mode !== "assault" && state.mode !== "siege") {
       buildOpenBlocks();
       return;
     }
@@ -6727,7 +6727,7 @@
     teamhunt: "Hunted (red) vs every hunter (blue) · new #1 joins the hunted team · hunted kill pays 95% · other kills 80–90% · respawn 15–20% · fresh server after 4 hours",
     tag: "Shoot to convert · random team · start at 45 · win or 4 hours starts a fresh server",
     protect: "Two motherships roam · random team · start at 45 · [N] skip to 45 · [H] to take control · win or 4 hours starts a fresh server",
-    maze: "FFA inside generated walls · start at 45 · fresh server after 4 hours",
+    maze: "FFA · open L / Y / zig wall clusters · start at 45 · fresh server after 4 hours",
     domination: "Capture 4 points · random team · start at 45 · win or 4 hours starts a fresh server",
     assault: "Blue attacks Green · smaller maze · capture zones · start at 45 · Green wins in 10:00 if they hold 3/4 · win or 4 hours starts a fresh server",
     siege: "Open maps · red corners kill you · bosses spawn outside and siege sanctuaries · restore fallen sanctuaries · win or 4 hours starts a fresh server",
