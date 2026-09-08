@@ -2681,8 +2681,10 @@
       wreckDominator(tank, killer && killer.owner ? killer.owner : killer);
       return;
     }
-    const wasTopTen = rankedTanks(tank).slice(0, 10).includes(tank);
-    const keepTankOnRespawn = tank.ai && Math.random() < (wasTopTen ? 0.9 : 0.1);
+    const botsByScore = rankedTanks(tank).filter((t) => t.ai);
+    const topHalfCount = Math.ceil(botsByScore.length / 2);
+    const wasTopHalf = botsByScore.slice(0, topHalfCount).includes(tank);
+    const keepTankOnRespawn = tank.ai && Math.random() < (wasTopHalf ? 0.9 : 0.1);
     tank.respawnClassId = keepTankOnRespawn ? tank.classId : null;
     tank.respawnCustomDef = keepTankOnRespawn && tank.customDef
       ? TankCatalog.cloneDef(tank.customDef)
