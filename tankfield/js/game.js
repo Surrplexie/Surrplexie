@@ -336,6 +336,21 @@
     return best;
   }
 
+  function isFourTeamMode(mode) {
+    const m = mode == null ? state.mode : mode;
+    return m === "4tdm" || m === "4tdm-maze";
+  }
+
+  function isFourTeamMaze(mode) {
+    const m = mode == null ? state.mode : mode;
+    return m === "4tdm-maze";
+  }
+
+  function isMazeCombatMode(mode) {
+    const m = mode == null ? state.mode : mode;
+    return m === "maze" || m === "royalemaze" || m === "assault" || isFourTeamMaze(m);
+  }
+
   function zoneAt(x, y) {
     if (state.mode === "siege") return inSiegeRed(x, y) ? "boss" : null;
     if (state.mode === "tdm") {
@@ -343,7 +358,7 @@
       if (x >= WORLD.w - BASE_W) return "red";
       return null;
     }
-    if (state.mode !== "4tdm") return null;
+    if (!isFourTeamMode()) return null;
     const left = x <= BASE_W;
     const right = x >= WORLD.w - BASE_W;
     const top = y <= BASE_W;
@@ -358,7 +373,7 @@
 
   function spawnInBase(team) {
     const pad = 90;
-    if (state.mode === "4tdm") {
+    if (isFourTeamMode()) {
       if (team === "green") return { x: rand(BASE_W + pad, WORLD.w - BASE_W - pad), y: rand(pad, BASE_W - pad) };
       if (team === "purple") return { x: rand(BASE_W + pad, WORLD.w - BASE_W - pad), y: rand(WORLD.h - BASE_W + pad, WORLD.h - pad) };
       if (team === "blue") return { x: rand(pad, BASE_W - pad), y: rand(BASE_W + pad, WORLD.h - BASE_W - pad) };
@@ -1030,7 +1045,9 @@
   function buildOpenBlocks() {
     const { cube, cols, rows, x0, y0 } = mazeGrid();
     const filled = Array.from({ length: rows }, () => Array(cols).fill(false));
-    const inside = (r, c) => r > 1 && r < rows - 2 && c > 1 && c < cols - 2;
+    const inside = isFourTeamMaze()
+      ? (r, c) => r >= 0 && r < rows && c >= 0 && c < cols
+      : (r, c) => r > 1 && r < rows - 2 && c > 1 && c < cols - 2;
     const key = (r, c) => r + "," + c;
     const shapes = [
       [[0, 0], [1, 0]],
@@ -1076,8 +1093,8 @@
     };
     const tryPlace = (cells0, tries) => {
       for (let t = 0; t < tries; t++) {
-        const seedR = irand(2, rows - 3);
-        const seedC = irand(2, cols - 3);
+        const seedR = irand(isFourTeamMaze() ? 0 : 2, isFourTeamMaze() ? rows - 1 : rows - 3);
+        const seedC = irand(isFourTeamMaze() ? 0 : 2, isFourTeamMaze() ? cols - 1 : cols - 3);
         const cells = cells0.map(([dc, dr]) => [seedR + dr, seedC + dc]);
         const skip = new Set(cells.map(([r, c]) => key(r, c)));
         let ok = true;
@@ -1111,7 +1128,22 @@
         if (r >= 0 && c >= 0 && r < rows && c < cols) filled[r][c] = false;
       }
     }
-    clearMazeBorder(filled, rows, cols);
+    if (isFourTeamMaze()) {
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (!filled[r][c]) continue;
+          const x = x0 + c * cube;
+          const y = y0 + r * cube;
+          const inLeft = x < BASE_W && y + cube > BASE_W && y < WORLD.h - BASE_W;
+          const inRight = x + cube > WORLD.w - BASE_W && y + cube > BASE_W && y < WORLD.h - BASE_W;
+          const inTop = y < BASE_W && x + cube > BASE_W && x < WORLD.w - BASE_W;
+          const inBottom = y + cube > WORLD.h - BASE_W && x + cube > BASE_W && x < WORLD.w - BASE_W;
+          if (inLeft || inRight || inTop || inBottom) filled[r][c] = false;
+        }
+      }
+    } else {
+      clearMazeBorder(filled, rows, cols);
+    }
     state.maze = { cube, x0, y0, cols, rows, filled };
     rebuildMazeWalls();
   }
@@ -1987,7 +2019,7 @@
   function botTeamsFor(mode, mine, n) {
     const count = clampBotCount(n != null ? n : botCountFor());
     if (mode === "tdm" && mine) return splitTwoTeams(count, mine, mine === "blue" ? "red" : "blue");
-    if (mode === "4tdm" && mine) return splitFourTeams(count, mine);
+    if (isFourTeamMode(mode) && mine) return splitFourTeams(count, mine);
     if (mode === "domination" && mine) return splitTwoTeams(count, mine, mine === "blue" ? "red" : "blue");
     if (mode === "assault" && mine) return splitTwoTeams(count, mine, mine === "blue" ? "green" : "blue");
     if (mode === "tag" && mine) return splitTwoTeams(count, mine, mine === "green" ? "red" : "green");
@@ -2016,6 +2048,7 @@
       ffazero: "FFA Zero",
       tdm: "2 Teams",
       "4tdm": "4 Teams",
+      "4tdm-maze": "4 Teams Maze",
       manhunt: "Manhunt",
       teamhunt: "Team Manhunt",
       tag: "Tag",
@@ -2059,7 +2092,7 @@
 
   function teamMode(mode) {
     const m = mode == null ? state.mode : mode;
-    return m === "tdm" || m === "4tdm" || m === "tag" || m === "protect" || m === "domination" || m === "assault" || m === "siege" || m === "teamhunt";
+    return m === "tdm" || isFourTeamMode(m) || m === "tag" || m === "protect" || m === "domination" || m === "assault" || m === "siege" || m === "teamhunt";
   }
 
   function healerAllowed(tank) {
@@ -2092,7 +2125,7 @@
     if (mode === "teamhunt") return HUNTER_TEAM;
     if (mode === "tdm" || mode === "domination") return Math.random() < 0.5 ? "red" : "blue";
     if (mode === "assault") return Math.random() < 0.5 ? "blue" : "green";
-    if (mode === "4tdm") return TEAM4[irand(0, TEAM4.length - 1)];
+    if (isFourTeamMode(mode)) return TEAM4[irand(0, TEAM4.length - 1)];
     if (mode === "tag" || mode === "protect") return Math.random() < 0.5 ? "red" : "green";
     return null;
   }
@@ -2330,7 +2363,7 @@
     for (let i = 0; i < squares; i++) state.shapes.push(createShape("square"));
     for (let i = 0; i < tris; i++) state.shapes.push(createShape("triangle"));
     for (let i = 0; i < pentas; i++) state.shapes.push(createShape("pentagon", nestPos()));
-    if (!smallOnly && state.mode !== "protect" && state.mode !== "maze" && state.mode !== "assault" && state.mode !== "siege") state.shapes.push(createShape("alpha"));
+    if (!smallOnly && state.mode !== "protect" && !isMazeCombatMode() && state.mode !== "siege") state.shapes.push(createShape("alpha"));
     if (!smallOnly) for (let i = 0; i < 2; i++) state.shapes.push(createShape("crasher"));
   }
 
@@ -2381,7 +2414,7 @@
         classId: "basic",
         team,
         color: colorFor({ team }),
-        pos: (state.mode === "tdm" || state.mode === "4tdm") && team
+        pos: (state.mode === "tdm" || isFourTeamMode()) && team
           ? spawnInBase(team)
           : state.mode === "assault" && team
             ? assaultSpawn(team)
@@ -2621,7 +2654,7 @@
     state.closeAt = 0;
     state.closersSpawned = false;
     state.serverResetAt = 0;
-    if (state.mode === "maze" || state.mode === "royalemaze") buildMaze();
+    if (state.mode === "maze" || state.mode === "royalemaze" || isFourTeamMaze()) buildMaze();
     if (state.mode === "assault") buildAssaultArena();
     if (state.mode === "siege") buildSiegeArena();
     if (state.mode === "domination") spawnDoms();
@@ -2636,7 +2669,7 @@
       classId: opts.classId || "basic",
       customDef: opts.customDef || null,
       score: startScore(),
-      pos: (state.mode === "tdm" || state.mode === "4tdm") && team
+      pos: (state.mode === "tdm" || isFourTeamMode()) && team
         ? spawnInBase(team)
         : state.mode === "assault" && team
           ? assaultSpawn(team)
@@ -2812,7 +2845,7 @@
           customDef: tank.respawnCustomDef,
           team,
           color: colorFor({ team }),
-          pos: (state.mode === "tdm" || state.mode === "4tdm") && team
+          pos: (state.mode === "tdm" || isFourTeamMode()) && team
             ? spawnInBase(team)
             : state.mode === "assault" && team
               ? assaultSpawn(team)
@@ -3145,7 +3178,7 @@
     const prev = state.player;
     const team = isTeamHunt() ? HUNTER_TEAM : (prev && prev.team ? prev.team : pickStartTeam(state.mode));
     const home = team ? mothershipOf(team) : null;
-    const pos = (state.mode === "tdm" || state.mode === "4tdm") && team
+    const pos = (state.mode === "tdm" || isFourTeamMode()) && team
       ? spawnInBase(team)
       : state.mode === "assault" && team
         ? assaultSpawn(team)
@@ -4311,7 +4344,7 @@
       }
       state.crasherAt = state.time + rand(60, 120);
     }
-    if (counts.alpha < 1 && state.mode !== "protect" && state.mode !== "maze" && state.mode !== "assault" && state.mode !== "siege" && !isRoyale() && state.alphaRespawnAt > 0 && state.time >= state.alphaRespawnAt) {
+    if (counts.alpha < 1 && state.mode !== "protect" && !isMazeCombatMode() && state.mode !== "siege" && !isRoyale() && state.alphaRespawnAt > 0 && state.time >= state.alphaRespawnAt) {
       state.shapes.push(createShape("alpha"));
       state.alphaRespawnAt = 0;
     }
@@ -4728,7 +4761,7 @@
     const defending = state.mode === "protect" && ownMoth && tank.aiJob === "defend";
     const huntingMoth = state.mode === "protect" && foeMoth && tank.aiJob === "hunt";
     const ram = isRammer(tank);
-    const maze = state.mode === "maze" || state.mode === "assault" || state.mode === "royalemaze";
+    const maze = isMazeCombatMode();
     const fightRange = maze
       ? (ram ? 520 : 640)
       : tank.aiFocus === "farm"
@@ -4766,7 +4799,7 @@
     const hunterNear = huntedSelf ? nearestSeen(tank, state.tanks, 640, (t) => isEnemyTank(tank, t)) : null;
     if (closerNear) tank.aiState = "flee";
     else if (stormOut) tank.aiState = "storm";
-    else if (invading || ((state.mode === "tdm" || state.mode === "4tdm") && tank.team && low)) tank.aiState = "home";
+    else if (invading || ((state.mode === "tdm" || isFourTeamMode()) && tank.team && low)) tank.aiState = "home";
     else if (huntedSelf && hunterNear && dist2(tank, hunterNear) < 480 * 480) tank.aiState = "flee";
     else if (low && enemy && state.mode !== "tag" && !huntingMoth) tank.aiState = "flee";
     else if ((hunting && mark && enemy === mark) || (state.mode === "tag" && enemy) || (huntingMoth && foeMoth)) tank.aiState = "attack";
@@ -4999,7 +5032,7 @@
       ty = steered.y;
       if (!tank.aiTarget) tank.angle = Math.atan2(ty - tank.y, tx - tank.x);
     }
-    if ((state.mode === "tdm" || state.mode === "4tdm") && tank.team && tank.aiState !== "home") {
+    if ((state.mode === "tdm" || isFourTeamMode()) && tank.team && tank.aiState !== "home") {
       const destZone = zoneAt(tx, ty);
       if (destZone && destZone !== tank.team) {
         const home = baseCenter(tank.team);
@@ -5805,8 +5838,8 @@
 
   function teamBoardRows() {
     const rows = [];
-    if (state.mode === "tdm" || state.mode === "4tdm") {
-      const ids = state.mode === "4tdm" ? TEAM4 : ["blue", "red"];
+    if (state.mode === "tdm" || isFourTeamMode()) {
+      const ids = isFourTeamMode() ? TEAM4 : ["blue", "red"];
       for (const id of ids) {
         const sum = state.tanks.filter((t) => t.alive && t.team === id && !t.closer).reduce((n, t) => n + t.score, 0);
         rows.push({ color: TEAMS[id].color, label: `${TEAMS[id].name} — ${formatScore(sum)}`, sort: sum });
@@ -6269,7 +6302,7 @@
     ctx.strokeStyle = "#9a9a9a";
     ctx.lineWidth = 8;
     ctx.strokeRect(0, 0, WORLD.w, WORLD.h);
-    if (state.mode === "tdm" || state.mode === "4tdm") {
+    if (state.mode === "tdm" || isFourTeamMode()) {
       const paint = (team, x, y, w, h) => {
         const c = TEAMS[team].color;
         ctx.fillStyle = c;
@@ -6282,7 +6315,7 @@
         ctx.strokeRect(x + 4, y + 4, w - 8, h - 8);
         ctx.globalAlpha = 1;
       };
-      if (state.mode === "4tdm") {
+      if (isFourTeamMode()) {
         paint("blue", 0, BASE_W, BASE_W, WORLD.h - BASE_W * 2);
         paint("red", WORLD.w - BASE_W, BASE_W, BASE_W, WORLD.h - BASE_W * 2);
         paint("green", BASE_W, 0, WORLD.w - BASE_W * 2, BASE_W);
@@ -6368,7 +6401,7 @@
         ctx.lineWidth = stormOn ? 10 : 6;
         ctx.stroke();
       }
-    } else if (state.mode !== "protect" && state.mode !== "maze") {
+    } else if (state.mode !== "protect" && !isMazeCombatMode()) {
       ctx.fillStyle = "rgba(118, 141, 252, 0.08)";
       ctx.beginPath();
       ctx.arc(WORLD.w / 2, WORLD.h / 2, 700, 0, TAU);
@@ -6495,7 +6528,7 @@
       mctx.fillRect(mapX(x), mapY(y), (w / WORLD.w) * s, (h / WORLD.h) * s);
       mctx.globalAlpha = 1;
     };
-    if (state.mode === "4tdm") {
+    if (isFourTeamMode()) {
       paintZone("blue", 0, BASE_W, BASE_W, WORLD.h - BASE_W * 2);
       paintZone("red", WORLD.w - BASE_W, BASE_W, BASE_W, WORLD.h - BASE_W * 2);
       paintZone("green", BASE_W, 0, WORLD.w - BASE_W * 2, BASE_W);
@@ -6771,6 +6804,7 @@
     ffazero: "Everyone for themselves · start at 0 · score can drop below 45 · kills pay 80–90% · respawn 15–20% · fresh server after 4 hours",
     tdm: "Red vs blue · random team · start at 45 · kills pay 80–90% · respawn 15–20% · fresh server after 4 hours",
     "4tdm": "Four bases · random team · start at 45 · fresh server after 4 hours",
+    "4tdm-maze": "Four edge bases · open maze walls meet the spawn areas · random team · start at 45 · fresh server after 4 hours",
     manhunt: "Everyone hunts #1 · hunted kill pays 95% · other kills 80–90% · respawn 15–20% · hunted gets a small boost · fresh server after 4 hours",
     teamhunt: "Hunted (red) vs every hunter (blue) · new #1 joins the hunted team · hunted kill pays 95% · other kills 80–90% · respawn 15–20% · fresh server after 4 hours",
     tag: "Shoot to convert · random team · start at 45 · win or 4 hours starts a fresh server",
