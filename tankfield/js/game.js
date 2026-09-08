@@ -2344,7 +2344,7 @@
             ? assaultSpawn(team)
             : state.mode === "siege"
               ? siegeSpawn()
-            : isRoyale()
+            : usesScatteredSpawn()
               ? randomInWorld(180)
             : home
             ? (aiJob === "hunt" ? awayFrom(home.x, home.y, 860) : around(home.x, home.y, 240))
@@ -2599,7 +2599,7 @@
           ? assaultSpawn(team)
           : state.mode === "siege"
             ? siegeSpawn()
-          : isRoyale()
+          : usesScatteredSpawn()
             ? randomInWorld(180)
           : home
           ? around(home.x, home.y, 220)
@@ -2775,7 +2775,7 @@
               ? assaultSpawn(team)
               : state.mode === "siege"
                 ? siegeSpawn()
-              : isRoyale()
+              : usesScatteredSpawn()
                 ? randomInWorld(180)
               : state.mode === "protect" && mothershipOf(team)
               ? around(mothershipOf(team).x, mothershipOf(team).y, 220)
@@ -2912,6 +2912,11 @@
   function isRoyale(mode) {
     const m = mode == null ? state.mode : mode;
     return m === "royale" || m === "royalemaze";
+  }
+
+  function usesScatteredSpawn(mode) {
+    const m = mode == null ? state.mode : mode;
+    return m === "maze" || isRoyale(m);
   }
 
   function pickStormCenter() {
@@ -3103,7 +3108,7 @@
         ? assaultSpawn(team)
         : state.mode === "siege"
           ? siegeSpawn()
-        : isRoyale()
+        : usesScatteredSpawn()
           ? randomInWorld(180)
         : home
           ? around(home.x, home.y, 220)
