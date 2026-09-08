@@ -1102,6 +1102,15 @@
     for (let n = 0; n < Math.floor(nClusters * 0.45); n++) {
       tryPlace(rotShape(fillers[irand(0, fillers.length - 1)], irand(0, 3), false), 40);
     }
+    const centerR = Math.floor(rows / 2);
+    const centerC = Math.floor(cols / 2);
+    const clearHalfRows = Math.max(3, Math.floor(rows * 0.075));
+    const clearHalfCols = Math.max(3, Math.floor(cols * 0.075));
+    for (let r = centerR - clearHalfRows; r <= centerR + clearHalfRows; r++) {
+      for (let c = centerC - clearHalfCols; c <= centerC + clearHalfCols; c++) {
+        if (r >= 0 && c >= 0 && r < rows && c < cols) filled[r][c] = false;
+      }
+    }
     clearMazeBorder(filled, rows, cols);
     state.maze = { cube, x0, y0, cols, rows, filled };
     rebuildMazeWalls();
@@ -2194,6 +2203,39 @@
     };
   }
 
+  function safeShapePosition(preferred, radius) {
+    const margin = Math.max(24, radius + 6);
+    const valid = (p) => p
+      && p.x >= margin && p.y >= margin
+      && p.x <= WORLD.w - margin && p.y <= WORLD.h - margin
+      && !hitsWall(p.x, p.y, radius + 4);
+    if (valid(preferred)) return preferred;
+    if (preferred) {
+      for (let i = 0; i < 36; i++) {
+        const nearby = {
+          x: clamp(preferred.x + rand(-420, 420), margin, WORLD.w - margin),
+          y: clamp(preferred.y + rand(-420, 420), margin, WORLD.h - margin),
+        };
+        if (valid(nearby)) return nearby;
+      }
+    }
+    for (let i = 0; i < 100; i++) {
+      const anywhere = {
+        x: rand(margin, WORLD.w - margin),
+        y: rand(margin, WORLD.h - margin),
+      };
+      if (valid(anywhere)) return anywhere;
+    }
+    const step = Math.max(48, radius * 2 + 12);
+    for (let y = margin; y <= WORLD.h - margin; y += step) {
+      for (let x = margin; x <= WORLD.w - margin; x += step) {
+        const open = { x, y };
+        if (valid(open)) return open;
+      }
+    }
+    return { x: WORLD.w / 2, y: WORLD.h / 2 };
+  }
+
   function createShape(kind, pos) {
     const table = {
       square: { sides: 4, r: 18, hp: 18, score: 10, color: COLORS.square, spin: 0.6 },
@@ -2203,11 +2245,12 @@
       crasher: { sides: 3, r: 12, hp: 14, score: 15, color: COLORS.crasher, spin: 2.4 },
     };
     const t = table[kind];
-    const p = pos || (kind === "alpha"
+    const preferred = pos || (kind === "alpha"
       ? { x: WORLD.w / 2, y: WORLD.h / 2 }
       : kind === "pentagon" || kind === "crasher"
         ? nestPos(kind === "crasher" ? 720 : 640)
         : randomInWorld(80));
+    const p = safeShapePosition(preferred, t.r);
     return {
       type: "shape", kind, sides: t.sides, x: p.x, y: p.y, vx: 0, vy: 0,
       r: t.r, health: t.hp, maxHealth: t.hp, score: t.score, color: t.color,
