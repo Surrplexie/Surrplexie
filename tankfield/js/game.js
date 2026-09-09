@@ -201,6 +201,8 @@
     time: 0,
     spawnName: "Unnamed Tank",
     mode: "ffa",
+    mazeVariant: false,
+    growthVariant: false,
     armsRace: false,
     botCount: 20,
     paused: false,
@@ -229,6 +231,7 @@
     stormY: null,
     respawnAt: 0,
     walls: [],
+    extraWalls: [],
     maze: null,
     doms: [],
     domHold: null,
@@ -341,14 +344,22 @@
     return m === "4tdm" || m === "4tdm-maze";
   }
 
-  function isFourTeamMaze(mode) {
-    const m = mode == null ? state.mode : mode;
-    return m === "4tdm-maze";
+  function isMazeVariant() {
+    return !!state.mazeVariant;
+  }
+
+  function isGrowthVariant() {
+    return !!state.growthVariant;
+  }
+
+  function isGrowthTank(tank) {
+    return isGrowthVariant() && !!tank && !tank.closer && !tank.mothership
+      && !tank.dominator && !tank.boss && !tank.fodder;
   }
 
   function isMazeCombatMode(mode) {
     const m = mode == null ? state.mode : mode;
-    return m === "maze" || m === "royalemaze" || m === "assault" || isFourTeamMaze(m);
+    return isMazeVariant() || m === "maze" || m === "royalemaze" || m === "assault" || m === "4tdm-maze";
   }
 
   function inAssaultSpawnRing(x, y, pad = 0) {
@@ -433,7 +444,7 @@
   const GROWTH_SKILL = [0, 0];
 
   function levelCap() {
-    return state.mode === "growth" ? 1000 : LEVEL_CAP;
+    return isGrowthVariant() ? 1000 : LEVEL_CAP;
   }
 
   function statCap() {
@@ -533,12 +544,13 @@
     const def = getDef(tank);
     const m = modsOf(def);
     const sk = skillOf(tank);
-    const lvl = Math.min(tank.level, state.mode === "growth" ? 120 : LEVEL_CAP);
+    const growthTank = isGrowthTank(tank);
+    const lvl = Math.min(tank.level, growthTank ? 120 : LEVEL_CAP);
     const withLevel = !(tank && (tank.closer));
     const bodyHealth = ARRAS_BASE.HEALTH * (def.health || 1) * (m.health || 1);
     const bodyDamage = ARRAS_BASE.DAMAGE * (def.bodyDamage || 1);
     const sizeRatio = Math.max(1, (tank.r || 22) / 22);
-    const speedReduce = Math.min(state.mode === "growth" ? 4 : 2, sizeRatio);
+    const speedReduce = Math.min(growthTank ? 4 : 2, sizeRatio);
     const out = {
       maxHealth: ((withLevel ? 2 * lvl : 0) + bodyHealth) * sk.hlt,
       regen: ((withLevel ? 0.006 * lvl : 0) + 1) * ARRAS_BASE.REGEN * 55 * sk.rgn,
@@ -578,7 +590,7 @@
       out.reload = Math.max(0.08, out.reload * 0.9);
       out.fov *= 1.05;
     }
-    if (state.mode === "growth" && tank && !tank.closer && !tank.mothership && !tank.dominator && !tank.boss) {
+    if (growthTank) {
       out.fov *= 1 + Math.min(0.85, Math.max(0, (tank.r || 22) - 28) / 140);
     }
     if (tank && tank.sanctuary && !tank.destroyed && tank.team === "blue") {
@@ -607,7 +619,7 @@
 
   function skillPointsFor(level) {
     const lv = Math.max(1, Math.floor(Number(level) || 1));
-    const growth = state.mode === "growth";
+    const growth = isGrowthVariant();
     const cache = growth ? GROWTH_SKILL : SKILL_AT;
     while (cache.length <= lv) {
       const L = cache.length;
@@ -760,6 +772,7 @@
           fn({ x: m.x0 + col * m.cube, y: m.y0 + row * m.cube, w: m.cube, h: m.cube });
         }
       }
+      for (const w of state.extraWalls || []) fn(w);
       return;
     }
     for (const w of state.walls) fn(w);
@@ -824,6 +837,9 @@
         const c = Math.floor((x1 + dx * t - m.x0) / m.cube);
         const r = Math.floor((y1 + dy * t - m.y0) / m.cube);
         if (r >= 0 && c >= 0 && r < m.rows && c < m.cols && m.filled[r][c]) return false;
+      }
+      for (const w of state.extraWalls || []) {
+        if (segHitsAabb(x1, y1, x2, y2, w.x - 1, w.y - 1, w.x + w.w + 1, w.y + w.h + 1)) return false;
       }
       return true;
     }
@@ -896,9 +912,13 @@
     const total = m.rows * m.cols;
     const startI = start.r * m.cols + start.c;
     const goalI = goal.r * m.cols + goal.c;
-    const prev = new Int32Array(total);
+    const prev = tank.aiPathPrev && tank.aiPathPrev.length === total
+      ? tank.aiPathPrev
+      : (tank.aiPathPrev = new Int32Array(total));
     prev.fill(-2);
-    const queue = new Int32Array(total);
+    const queue = tank.aiPathQueue && tank.aiPathQueue.length === total
+      ? tank.aiPathQueue
+      : (tank.aiPathQueue = new Int32Array(total));
     let read = 0;
     let write = 0;
     queue[write++] = startI;
@@ -947,7 +967,7 @@
       tank.aiPath = built ? built.path : null;
       tank.aiPathGoal = goalKey;
       tank.aiPathIndex = 0;
-      tank.aiPathUntil = state.time + rand(0.65, 1.15);
+      tank.aiPathUntil = state.time + rand(1.1, 1.8);
     }
     const path = tank.aiPath;
     if (!path || !path.length) return null;
@@ -1190,7 +1210,8 @@
   function buildOpenBlocks() {
     const { cube, cols, rows, x0, y0 } = mazeGrid();
     const filled = Array.from({ length: rows }, () => Array(cols).fill(false));
-    const inside = isFourTeamMaze()
+    const edgeBases = state.mode === "tdm" || isFourTeamMode();
+    const inside = edgeBases
       ? (r, c) => r >= 0 && r < rows && c >= 0 && c < cols
       : (r, c) => r > 1 && r < rows - 2 && c > 1 && c < cols - 2;
     const key = (r, c) => r + "," + c;
@@ -1238,8 +1259,8 @@
     };
     const tryPlace = (cells0, tries) => {
       for (let t = 0; t < tries; t++) {
-        const seedR = irand(isFourTeamMaze() ? 0 : 2, isFourTeamMaze() ? rows - 1 : rows - 3);
-        const seedC = irand(isFourTeamMaze() ? 0 : 2, isFourTeamMaze() ? cols - 1 : cols - 3);
+        const seedR = irand(edgeBases ? 0 : 2, edgeBases ? rows - 1 : rows - 3);
+        const seedC = irand(edgeBases ? 0 : 2, edgeBases ? cols - 1 : cols - 3);
         const cells = cells0.map(([dc, dr]) => [seedR + dr, seedC + dc]);
         const skip = new Set(cells.map(([r, c]) => key(r, c)));
         let ok = true;
@@ -1273,16 +1294,17 @@
         if (r >= 0 && c >= 0 && r < rows && c < cols) filled[r][c] = false;
       }
     }
-    if (isFourTeamMaze()) {
+    if (edgeBases) {
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           if (!filled[r][c]) continue;
           const x = x0 + c * cube;
           const y = y0 + r * cube;
-          const inLeft = x < BASE_W && y + cube > BASE_W && y < WORLD.h - BASE_W;
-          const inRight = x + cube > WORLD.w - BASE_W && y + cube > BASE_W && y < WORLD.h - BASE_W;
-          const inTop = y < BASE_W && x + cube > BASE_W && x < WORLD.w - BASE_W;
-          const inBottom = y + cube > WORLD.h - BASE_W && x + cube > BASE_W && x < WORLD.w - BASE_W;
+          const four = isFourTeamMode();
+          const inLeft = x < BASE_W && (!four || (y + cube > BASE_W && y < WORLD.h - BASE_W));
+          const inRight = x + cube > WORLD.w - BASE_W && (!four || (y + cube > BASE_W && y < WORLD.h - BASE_W));
+          const inTop = four && y < BASE_W && x + cube > BASE_W && x < WORLD.w - BASE_W;
+          const inBottom = four && y + cube > WORLD.h - BASE_W && x + cube > BASE_W && x < WORLD.w - BASE_W;
           if (inLeft || inRight || inTop || inBottom) filled[r][c] = false;
         }
       }
@@ -1357,7 +1379,7 @@
         walls.push({ x: m.x0 + c * m.cube, y: m.y0 + r * m.cube, w: m.cube, h: m.cube });
       }
     }
-    state.walls = walls;
+    state.walls = walls.concat(state.extraWalls || []);
   }
 
   function punchMazeAt(x, y, radius) {
@@ -1520,7 +1542,8 @@
 
   function buildAssaultArena() {
     const inset = Math.round(WORLD.w * 0.2);
-    buildMaze();
+    if (isMazeVariant()) buildOpenBlocks();
+    else buildMaze();
     const m = state.maze;
     if (Math.random() < 0.42 && m) {
       const extra = Math.floor(m.cols * m.rows * rand(0.12, 0.22));
@@ -1887,6 +1910,7 @@
     const g = L.gate;
     const t = w.t;
     state.maze = null;
+    state.extraWalls = [];
     state.walls = [];
     const mx = (w.x0 + w.x1) * 0.5;
     const my = (w.y0 + w.y1) * 0.5;
@@ -1948,6 +1972,29 @@
   function buildSiegeArena() {
     buildSiegeEnclosure();
     const spots = siegeSancSpots();
+    if (isMazeVariant()) {
+      const enclosure = state.walls.slice();
+      state.extraWalls = enclosure;
+      buildOpenBlocks();
+      const m = state.maze;
+      const L = siegeLayout();
+      if (m && L) {
+        for (let r = 0; r < m.rows; r++) {
+          for (let c = 0; c < m.cols; c++) {
+            if (!m.filled[r][c]) continue;
+            const x0 = m.x0 + c * m.cube;
+            const y0 = m.y0 + r * m.cube;
+            const x1 = x0 + m.cube;
+            const y1 = y0 + m.cube;
+            if (x0 < L.inner.x0 || y0 < L.inner.y0 || x1 > L.inner.x1 || y1 > L.inner.y1) {
+              m.filled[r][c] = false;
+            }
+          }
+        }
+        for (const p of spots) punchMazeAt(p.x, p.y, 440);
+        rebuildMazeWalls();
+      }
+    }
     for (const p of spots) spawnSanctuary(p, "blue");
     state.siegeWaves = siegeWaveList();
     state.siegeWave = -1;
@@ -2110,6 +2157,10 @@
       { x: inset, y: WORLD.h - inset, r: 118, team: null, progress: 0 },
       { x: WORLD.w - inset, y: WORLD.h - inset, r: 118, team: null, progress: 0 },
     ];
+    if (isMazeVariant() && state.maze) {
+      for (const d of state.doms) punchMazeAt(d.x, d.y, d.r + 180);
+      rebuildMazeWalls();
+    }
   }
 
   function updateDoms(dt) {
@@ -2206,17 +2257,39 @@
     return [];
   }
 
-  function parseArmsKey(key, armsFlag) {
+  function parseArmsKey(key, armsFlag, mazeFlag, growthFlag) {
     let mode = key || "ffa";
     let arms = !!armsFlag;
-    if (mode === "armsrace") return { mode: "ffa", arms: true };
-    if (mode.endsWith("-ar")) return { mode: mode.slice(0, -3), arms: true };
-    return { mode, arms };
+    let maze = !!mazeFlag;
+    let growth = !!growthFlag;
+    if (mode.endsWith("-ar")) {
+      mode = mode.slice(0, -3);
+      arms = true;
+    }
+    if (mode === "armsrace") {
+      mode = "ffa";
+      arms = true;
+    } else if (mode === "growth") {
+      mode = "ffa";
+      growth = true;
+    } else if (mode === "maze") {
+      mode = "ffa";
+      maze = true;
+    } else if (mode === "royalemaze") {
+      mode = "royale";
+      maze = true;
+    } else if (mode === "4tdm-maze") {
+      mode = "4tdm";
+      maze = true;
+    }
+    return { mode, arms, maze, growth };
   }
 
-  function modeLabel(mode, arms) {
+  function modeLabel(mode, arms, maze, growth) {
     const m = mode == null ? state.mode : mode;
     const ar = arms == null ? !!state.armsRace : !!arms;
+    const mz = maze == null ? isMazeVariant() : !!maze;
+    const gr = growth == null ? isGrowthVariant() : !!growth;
     const names = {
       ffa: "FFA",
       ffazero: "FFA Zero",
@@ -2239,10 +2312,8 @@
       armsrace: "Arms Race",
     };
     const base = names[m] || "FFA";
-    if (!ar || m === "sandbox") return base;
-    if (m === "ffa") return "Arms Race";
-    if (m === "protect") return "Mothership AR";
-    return base + " AR";
+    if (m === "sandbox") return base;
+    return base + (mz ? " Maze" : "") + (gr ? " Growth" : "") + (ar ? " AR" : "");
   }
 
   function isArmsMode() {
@@ -2374,16 +2445,17 @@
   }
 
   function applyLevel(tank, allowBelowFloor = false) {
-    if (!allowBelowFloor && tank && !tank.devScoreOverrideFloor && (state.mode === "growth" || state.armsRace) && !tank.closer && !tank.mothership && !tank.dominator && !tank.boss && !tank.fodder) {
+    if (!allowBelowFloor && tank && !tank.devScoreOverrideFloor && (isGrowthVariant() || state.armsRace) && !tank.closer && !tank.mothership && !tank.dominator && !tank.boss && !tank.fodder) {
       tank.score = Math.max(Number(tank.score) || 0, xpForLevel(LEVEL_CAP));
     }
     const next = levelFromScore(tank.score);
     const gained = next > tank.level;
     tank.level = next;
     const m = modsOf(getDef(tank));
-    const sizeLv = state.mode === "growth" ? tank.level : Math.min(tank.level, LEVEL_CAP);
+    const growthTank = isGrowthTank(tank);
+    const sizeLv = growthTank ? tank.level : Math.min(tank.level, LEVEL_CAP);
     tank.r = (20 + Math.min(sizeLv, 45) * 0.18) * (m.size || 1);
-    if (state.mode === "growth" && tank.level > 45) {
+    if (growthTank && tank.level > 45) {
       tank.r += Math.max(0, tank.score - xpForLevel(45)) / 3e6 * 90;
       tank.r = Math.min(tank.r, 220);
     }
@@ -2420,13 +2492,15 @@
 
   function safeShapePosition(preferred, radius) {
     const margin = Math.max(24, radius + 6);
-    const touchesAssaultRing = (p) => state.mode === "assault" && [
+    const touchesSpawnZone = (p) => [
       [0, 0], [radius + 4, 0], [-radius - 4, 0], [0, radius + 4], [0, -radius - 4],
-    ].some(([dx, dy]) => inAssaultSpawnRing(p.x + dx, p.y + dy));
+    ].some(([dx, dy]) => state.mode === "assault"
+      ? inAssaultSpawnRing(p.x + dx, p.y + dy)
+      : !!zoneAt(p.x + dx, p.y + dy));
     const valid = (p) => p
       && p.x >= margin && p.y >= margin
       && p.x <= WORLD.w - margin && p.y <= WORLD.h - margin
-      && !touchesAssaultRing(p)
+      && !touchesSpawnZone(p)
       && !hitsWall(p.x, p.y, radius + 4);
     if (valid(preferred)) return preferred;
     if (preferred) {
@@ -2542,10 +2616,11 @@
 
   function populateWorld() {
     state.shapes = [];
-    const smallOnly = isRoyale();
-    const squares = smallOnly ? 160 : state.mode === "growth" ? 320 : 220;
-    const pentas = smallOnly ? 0 : state.mode === "growth" ? 12 : 6;
-    const tris = smallOnly ? irand(6, 10) : state.mode === "growth" ? irand(4, 8) : irand(1, 3);
+    const growth = isGrowthVariant();
+    const smallOnly = isRoyale() && !growth;
+    const squares = growth ? 320 : smallOnly ? 160 : 220;
+    const pentas = growth ? 12 : smallOnly ? 0 : 6;
+    const tris = growth ? irand(4, 8) : smallOnly ? irand(6, 10) : irand(1, 3);
     for (let i = 0; i < squares; i++) state.shapes.push(createShape("square"));
     for (let i = 0; i < tris; i++) state.shapes.push(createShape("triangle"));
     for (let i = 0; i < pentas; i++) state.shapes.push(createShape("pentagon", nestPos()));
@@ -2746,6 +2821,10 @@
       m.spawnProtect = 0;
       state.tanks.push(m);
     }
+    if (isMazeVariant() && state.maze) {
+      for (const m of state.tanks.filter((t) => t.mothership)) punchMazeAt(m.x, m.y, 430);
+      rebuildMazeWalls();
+    }
   }
 
   function spawnMothership() {
@@ -2793,10 +2872,23 @@
     try {
     resetDevCli();
     state.spawnName = trimNick(name, "Unnamed Tank");
-    state.playOpts = opts;
-    const parsed = parseArmsKey(opts.sandbox ? "sandbox" : (opts.mode || "ffa"), opts.armsRace);
+    const parsed = parseArmsKey(
+      opts.sandbox ? "sandbox" : (opts.mode || "ffa"),
+      opts.armsRace,
+      opts.mazeVariant,
+      opts.growthVariant
+    );
     state.mode = opts.sandbox ? "sandbox" : parsed.mode;
+    state.mazeVariant = opts.sandbox ? false : parsed.maze;
+    state.growthVariant = opts.sandbox ? false : parsed.growth;
     state.armsRace = opts.sandbox ? true : parsed.arms;
+    state.playOpts = {
+      ...opts,
+      mode: state.mode,
+      mazeVariant: state.mazeVariant,
+      growthVariant: state.growthVariant,
+      armsRace: state.armsRace,
+    };
     state.botCount = clampBotCount(opts.botCount != null ? opts.botCount : menuBotCount);
     applyWorldSize(state.mode);
     state.tanks = [];
@@ -2804,6 +2896,7 @@
     state.particles = [];
     state.floaters = [];
     state.walls = [];
+    state.extraWalls = [];
     state.maze = null;
     state.doms = [];
     state.domHold = null;
@@ -2840,7 +2933,7 @@
     state.closeAt = 0;
     state.closersSpawned = false;
     state.serverResetAt = 0;
-    if (state.mode === "maze" || state.mode === "royalemaze" || isFourTeamMaze()) buildMaze();
+    if (isMazeVariant() && state.mode !== "assault" && state.mode !== "siege") buildOpenBlocks();
     if (state.mode === "assault") buildAssaultArena();
     if (state.mode === "siege") buildSiegeArena();
     if (state.mode === "domination") spawnDoms();
@@ -2895,11 +2988,11 @@
       note("Defend the blue sanctuaries. The red ring instakills you. Bosses spawn in the outer ring and push inward.");
       note("If every sanctuary falls, you cannot respawn. Destroy the yellow wrecks to restore them.");
     }
-    if (isZeroFfa()) {
+    if (isZeroFfa() && !isGrowthVariant() && !state.armsRace) {
       welcomeSpawnNotes();
       note("Everyone starts at 0. Score can drop below 45.");
     }
-    if (state.mode === "growth") {
+    if (isGrowthVariant()) {
       welcomeSpawnNotes();
       note("Everyone starts at 45. Grow past 45. Level cap is 1000. [N] skips to 45.");
     }
@@ -2918,7 +3011,7 @@
       note("You have 1 minute to farm and upgrade before the storm closes in.");
       note("After that, there are no respawns. Last tank standing wins.");
     }
-    if (state.armsRace && state.mode !== "sandbox" && state.mode !== "growth" && state.mode !== "onehp" && !isRoyale() && state.mode !== "assault" && state.mode !== "siege" && !isTeamHunt()) {
+    if (state.armsRace && state.mode !== "sandbox" && !isGrowthVariant() && state.mode !== "onehp" && !isRoyale() && state.mode !== "assault" && state.mode !== "siege" && !isTeamHunt()) {
       welcomeSpawnNotes();
     }
     armsWelcome();
@@ -3178,7 +3271,7 @@
 
   function usesScatteredSpawn(mode) {
     const m = mode == null ? state.mode : mode;
-    return m === "maze" || isRoyale(m);
+    return (isMazeVariant() && m !== "protect") || m === "maze" || isRoyale(m);
   }
 
   function pickStormCenter() {
@@ -3402,7 +3495,7 @@
     els.death.classList.add("hidden");
     if (els.spectateBar) els.spectateBar.classList.add("hidden");
     if (state.mode === "assault") welcomeSpawnNotes();
-    if (state.mode === "siege" || state.mode === "growth") welcomeSpawnNotes();
+    if (state.mode === "siege" || isGrowthVariant()) welcomeSpawnNotes();
     if (state.mode === "onehp") {
       welcomeSpawnNotes();
       note("Everyone has 1 HP. Health and shield stats do nothing.");
@@ -3411,7 +3504,7 @@
       welcomeSpawnNotes();
       note("Prep is still going. The storm has not started yet.");
     }
-    if (state.armsRace && state.mode !== "sandbox" && state.mode !== "onehp" && state.mode !== "assault" && state.mode !== "siege" && state.mode !== "growth" && !(isRoyale() && !force)) {
+    if (state.armsRace && state.mode !== "sandbox" && state.mode !== "onehp" && state.mode !== "assault" && state.mode !== "siege" && !isGrowthVariant() && !(isRoyale() && !force)) {
       welcomeSpawnNotes();
     }
     armsWelcome();
@@ -3984,7 +4077,7 @@
   }
 
   function restatGrowthShots(tank) {
-    if (state.mode !== "growth" || !tank || !state.bullets) return;
+    if (!isGrowthTank(tank) || !state.bullets) return;
     const sf = sizeFactorOf(tank);
     const r = tank.r || 20;
     for (const b of state.bullets) {
@@ -4180,7 +4273,7 @@
     }
     out.HEALTH *= 7.3;
     if (kind === "heal") out.DAMAGE = Math.abs(out.DAMAGE);
-    if (state.mode === "growth") {
+    if (isGrowthTank(tank)) {
       out.HEALTH *= sizeFactor;
       if (calc !== "drone") out.DAMAGE *= Math.sqrt(sizeFactor);
     }
@@ -4497,25 +4590,27 @@
   function maintainShapes() {
     const counts = { square: 0, triangle: 0, pentagon: 0, alpha: 0, crasher: 0 };
     for (const s of state.shapes) if (s.alive) counts[s.kind]++;
-    const want = isRoyale()
-      ? { square: 160, triangle: 8 }
-      : { square: state.mode === "growth" ? 320 : 220 };
+    const want = isGrowthVariant()
+      ? { square: 320, triangle: 6 }
+      : isRoyale()
+        ? { square: 160, triangle: 8 }
+        : { square: 220 };
     for (const kind of Object.keys(want)) {
       while (counts[kind] < want[kind]) {
         state.shapes.push(createShape(kind));
         counts[kind]++;
       }
     }
-    if (!isRoyale() && state.time >= state.pentagonAt) {
+    if ((!isRoyale() || isGrowthVariant()) && state.time >= state.pentagonAt) {
       const n = irand(2, 5);
-      const pCap = state.mode === "growth" ? 40 : 24;
+      const pCap = isGrowthVariant() ? 40 : 24;
       for (let i = 0; i < n && counts.pentagon < pCap; i++) {
         state.shapes.push(createShape("pentagon", nestPos()));
         counts.pentagon++;
       }
       state.pentagonAt = state.time + rand(7, 16);
     }
-    if (!isRoyale() && state.time >= state.triangleAt) {
+    if ((!isRoyale() || isGrowthVariant()) && state.time >= state.triangleAt) {
       const n = irand(1, 5);
       for (let i = 0; i < n && counts.triangle < 22; i++) {
         state.shapes.push(createShape("triangle"));
@@ -4523,7 +4618,7 @@
       }
       state.triangleAt = state.time + rand(60, 180);
     }
-    if (!isRoyale() && state.time >= (state.crasherAt || 0)) {
+    if ((!isRoyale() || isGrowthVariant()) && state.time >= (state.crasherAt || 0)) {
       if (counts.crasher < 7) {
         state.shapes.push(createShape("crasher"));
         counts.crasher++;
@@ -4572,6 +4667,8 @@
   function restartServer() {
     const opts = state.playOpts || {
       mode: state.mode,
+      mazeVariant: state.mazeVariant,
+      growthVariant: state.growthVariant,
       armsRace: state.armsRace,
       botCount: state.botCount,
       sandbox: state.mode === "sandbox",
@@ -4887,6 +4984,11 @@
       } else {
         tank.aiState = "wander";
       }
+      if (state.maze) {
+        const steered = steerAround(tank, tx, ty);
+        tx = steered.x;
+        ty = steered.y;
+      }
       tank.aiTarget = target || null;
       if (getDef(tank).spin) tank.angle += 2.4 * dt;
       else if (target) tank.angle = aimAt(tank, target, st);
@@ -4924,6 +5026,11 @@
         }
       }
       if ((tx - tank.x) ** 2 + (ty - tank.y) ** 2 < 160 * 160) tank.aiT = 0;
+      if (state.maze) {
+        const steered = steerAround(tank, tx, ty);
+        tx = steered.x;
+        ty = steered.y;
+      }
       const ang = Math.atan2(ty - tank.y, tx - tank.x);
       tank.vx += Math.cos(ang) * st.moveSpeed * 38 * dt;
       tank.vy += Math.sin(ang) * st.moveSpeed * 38 * dt;
@@ -5925,7 +6032,7 @@
     if (els.xpFill) els.xpFill.style.width = `${clamp(pct, 0, 100)}%`;
     if (els.xpLabel) {
       const cap = levelCap();
-      els.xpLabel.textContent = spectateFree() ? "Free camera" : (state.mode === "growth" ? `Level ${p.level}/${cap} ${def.name}` : `Level ${p.level} ${def.name}`);
+      els.xpLabel.textContent = spectateFree() ? "Free camera" : (isGrowthVariant() ? `Level ${p.level}/${cap} ${def.name}` : `Level ${p.level} ${def.name}`);
     }
     if (els.playerName) {
       if (spectateFree()) els.playerName.textContent = "Spectator";
@@ -5995,7 +6102,7 @@
       else {
         const green = state.tanks.filter((t) => t.alive && !t.closer && t.team === "green").length;
         const redn = state.tanks.filter((t) => t.alive && !t.closer && t.team === "red").length;
-        els.arenaMode.textContent = `Tag · Green ${green} – ${redn} Red`;
+        els.arenaMode.textContent = `${modeLabel()} · Green ${green} – ${redn} Red`;
       }
     }
     if (els.arenaMode && state.mode === "protect") {
@@ -6012,7 +6119,7 @@
     if (els.arenaMode && state.mode === "domination") {
       const b = state.doms.filter((d) => d.team === "blue").length;
       const r = state.doms.filter((d) => d.team === "red").length;
-      els.arenaMode.textContent = state.closing ? "Fresh server" : `Domination · Blue ${b} – ${r} Red`;
+      els.arenaMode.textContent = state.closing ? "Fresh server" : `${modeLabel()} · Blue ${b} – ${r} Red`;
     }
     if (els.arenaMode && state.mode === "assault") {
       const live = assaultLiveCount();
@@ -6029,12 +6136,13 @@
       const all = Math.max(1, siegeSanctuaries().length);
       els.arenaMode.textContent = state.closing
         ? "Fresh server"
-        : `Siege · Wave ${Math.min(wave, total)}/${total} · ${live}/${all} sancs`;
+        : `${modeLabel()} · Wave ${Math.min(wave, total)}/${total} · ${live}/${all} sancs`;
     }
-    if (els.arenaMode && state.mode === "growth") {
+    if (els.arenaMode && isGrowthVariant() && !isHuntMode() && state.mode !== "protect"
+      && state.mode !== "domination" && state.mode !== "assault" && state.mode !== "siege" && !isRoyale()) {
       els.arenaMode.textContent = state.closing
         ? "Fresh server"
-        : (state.armsRace ? "Growth AR · cap 1000 · [N] lv45" : "Growth · cap 1000 · [N] lv45");
+        : `${modeLabel()} · cap 1000 · [N] lv45`;
     }
     if (els.arenaMode && isRoyale()) {
       const alive = royaleContestants().length;
@@ -6982,7 +7090,7 @@
       state.autoSpin = !state.autoSpin;
       note(state.autoSpin ? "Autospin enabled." : "Autospin disabled.");
     }
-    const skippedLevel = k === "n" && running && !state.paused && (state.mode === "protect" || state.mode === "growth" || state.armsRace) && skipToLevelCap(menuTank());
+    const skippedLevel = k === "n" && running && !state.paused && (state.mode === "protect" || isGrowthVariant() || state.armsRace) && skipToLevelCap(menuTank());
     if (k === "h" && running && !state.paused && state.mode === "protect") {
       toggleMothershipControl();
     } else if (!skippedLevel) {
@@ -7035,6 +7143,7 @@
 
   let menuMode = "ffa";
   let menuTeam = "blue";
+  const menuVariants = { maze: false, growth: false, arms: false };
   const MODE_HINT = {
     ffa: "Everyone for themselves · start at 45 · kills pay 80–90% · respawn 15–20% · fresh server after 4 hours",
     ffazero: "Everyone for themselves · start at 0 · score can drop below 45 · kills pay 80–90% · respawn 15–20% · fresh server after 4 hours",
@@ -7077,8 +7186,13 @@
       startGame(name, { sandbox: true, classId: "basic", botCount: bots });
       return;
     }
-    const parsed = parseArmsKey(menuMode);
-    startGame(name, { mode: parsed.mode, armsRace: parsed.arms, botCount: bots });
+    startGame(name, {
+      mode: menuMode,
+      mazeVariant: menuVariants.maze,
+      growthVariant: menuVariants.growth,
+      armsRace: menuVariants.arms,
+      botCount: bots,
+    });
   }
 
   function openWorkshop() {
@@ -7090,8 +7204,39 @@
     document.querySelectorAll(".server-row").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
     const row = document.getElementById("team-row");
     if (row) row.classList.add("hidden");
+    syncVariantToggles();
+    updateModeHint();
+  }
+
+  function updateModeHint() {
     const hint = document.getElementById("mode-hint");
-    if (hint) hint.textContent = MODE_HINT[menuMode] || "";
+    if (!hint) return;
+    let base = MODE_HINT[menuMode] || "";
+    const extras = [];
+    if (menuMode !== "sandbox" && menuVariants.maze) extras.push("open maze layout");
+    if (menuMode !== "sandbox" && menuVariants.growth) extras.push("grow to level 1000");
+    if (menuMode !== "sandbox" && menuVariants.arms) extras.push("Arms Race class tree");
+    if (menuMode === "ffazero" && (menuVariants.growth || menuVariants.arms)) {
+      base = base.replace("start at 0 · score can drop below 45", "progression starts at level 45");
+    }
+    hint.textContent = [base, ...extras].filter(Boolean).join(" · ");
+  }
+
+  function syncVariantToggles() {
+    const sandbox = menuMode === "sandbox";
+    document.querySelectorAll(".variant-toggle").forEach((button) => {
+      const active = !sandbox && !!menuVariants[button.dataset.variant];
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+      button.disabled = sandbox;
+    });
+  }
+
+  function toggleMenuVariant(variant) {
+    if (menuMode === "sandbox" || !(variant in menuVariants)) return;
+    menuVariants[variant] = !menuVariants[variant];
+    syncVariantToggles();
+    updateModeHint();
   }
 
   function setServerFilter(filter) {
@@ -7120,6 +7265,8 @@
         setMenuMode(btn.dataset.mode);
       } else if (btn.classList.contains("server-filter")) {
         setServerFilter(btn.dataset.filter);
+      } else if (btn.classList.contains("variant-toggle")) {
+        toggleMenuVariant(btn.dataset.variant);
       } else if (btn.classList.contains("team-chip")) {
         menuTeam = btn.dataset.team;
         document.querySelectorAll(".team-chip").forEach((b) => b.classList.toggle("selected", b === btn));
