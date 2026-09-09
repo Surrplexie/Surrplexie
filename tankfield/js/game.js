@@ -358,7 +358,6 @@
 
   function zoneAt(x, y) {
     if (state.mode === "siege") return inSiegeRed(x, y) ? "boss" : null;
-    if (state.mode === "assault") return inAssaultSpawnRing(x, y) ? "blue" : null;
     if (state.mode === "tdm") {
       if (x <= BASE_W) return "blue";
       if (x >= WORLD.w - BASE_W) return "red";
@@ -1458,20 +1457,6 @@
       return { x: WORLD.w * 0.5, y: ASSAULT_ZONE * 0.5 };
     }
     return randomInWorld(200);
-  }
-
-  function assaultRingApproach(target, gap = 140) {
-    const inset = ASSAULT_ZONE + gap;
-    const x = clamp(target.x, inset, WORLD.w - inset);
-    const y = clamp(target.y, inset, WORLD.h - inset);
-    const edges = [
-      { d: target.x, x: inset, y },
-      { d: WORLD.w - target.x, x: WORLD.w - inset, y },
-      { d: target.y, x, y: inset },
-      { d: WORLD.h - target.y, x, y: WORLD.h - inset },
-    ];
-    edges.sort((a, b) => a.d - b.d);
-    return edges[0];
   }
 
   function welcomeSpawnNotes() {
@@ -5116,11 +5101,6 @@
         const steered = steerAround(tank, s.x, s.y);
         tx = steered.x;
         ty = steered.y;
-      } else if (state.mode === "assault") {
-        const h = healerDominator() || { x: WORLD.w * 0.5, y: WORLD.h * 0.5 };
-        const steered = steerAround(tank, h.x, h.y);
-        tx = steered.x;
-        ty = steered.y;
       } else {
         const home = baseCenter(tank.team);
         const steered = steerAround(tank, home.x, home.y);
@@ -5140,11 +5120,7 @@
     } else if (tank.aiState === "attack" && enemy) {
       const enemySeen = canSee(tank, enemy);
       const ez = zoneAt(enemy.x, enemy.y);
-      if (state.mode === "assault" && ez === "blue" && ez === enemy.team) {
-        const edge = assaultRingApproach(enemy);
-        tx = edge.x;
-        ty = edge.y;
-      } else if (maze && !enemySeen) {
+      if (maze && !enemySeen) {
         tx = enemy.x;
         ty = enemy.y;
       } else if (ez && ez === enemy.team) {
@@ -7071,7 +7047,7 @@
     protect: "Two motherships roam · random team · start at 45 · [N] skip to 45 · [H] to take control · win or 4 hours starts a fresh server",
     maze: "FFA · open L / Y / zig wall clusters · start at 45 · fresh server after 4 hours",
     domination: "Capture 4 points · random team · start at 45 · win or 4 hours starts a fresh server",
-    assault: "Blue attacks Green · Blue spawns across a protected 360-wide perimeter ring · smaller maze · capture zones · start at 45 · Green wins in 10:00 if they hold 3/4 · win or 4 hours starts a fresh server",
+    assault: "Blue attacks Green · Blue spawns across a 360-wide perimeter ring · smaller maze · capture zones · start at 45 · Green wins in 10:00 if they hold 3/4 · win or 4 hours starts a fresh server",
     siege: "Open maps · red corners kill you · bosses spawn outside and siege sanctuaries · restore fallen sanctuaries · win or 4 hours starts a fresh server",
     growth: "FFA · grow past 45 to 1000 · everyone starts at 45 · never below 45 · [N] skip to 45 · fresh server after 4 hours",
     onehp: "Everyone for themselves · 1 HP · no shields · health stats do nothing · medium map · start at 45 · fresh server after 4 hours",
@@ -7081,7 +7057,7 @@
     armsrace: "FFA rules · expanded Arras class tree · hybrids, extra T4–T5 tanks at 45 · start at 45 · never below 45 · [N] skip to 45 · fresh server after 4 hours",
     "growth-ar": "Growth · Arms Race class tree · everyone starts at 45 · never below 45 · [N] skip to 45 · fresh server after 4 hours",
     "protect-ar": "Mothership Protect · Arms Race class tree · random team · start at 45 · [N] skip · [H] to take control · win or 4 hours starts a fresh server",
-    "assault-ar": "Assault · Arms Race class tree · Blue spawns across a protected 360-wide perimeter ring · Blue attacks Green · capture zones · Green wins in 10:00 if they hold 3/4 · win or 4 hours starts a fresh server",
+    "assault-ar": "Assault · Arms Race class tree · Blue spawns across a 360-wide perimeter ring · Blue attacks Green · capture zones · Green wins in 10:00 if they hold 3/4 · win or 4 hours starts a fresh server",
     "tdm-ar": "Red vs blue · Arms Race class tree · random team · start at 45 · kills pay 80–90% · respawn 15–20% · fresh server after 4 hours",
     "4tdm-ar": "Four bases · Arms Race class tree · random team · start at 45 · fresh server after 4 hours",
     "royalemaze-ar": "Royale Maze · Arms Race class tree · L / Y / zig clusters · storm closes fully · last tank wins · then a fresh server",
