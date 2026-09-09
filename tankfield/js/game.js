@@ -3,7 +3,7 @@
 
   const WORLD = { w: 11500, h: 11500 };
   const WORLD_OPEN = 11500;
-  const ASSAULT_ZONE = 320;
+  const ASSAULT_ZONE = 360;
   const TAU = Math.PI * 2;
   const STAT_MAX = 9;
   const LEVEL_CAP = 45;
@@ -351,8 +351,14 @@
     return m === "maze" || m === "royalemaze" || m === "assault" || isFourTeamMaze(m);
   }
 
+  function inAssaultSpawnRing(x, y, pad = 0) {
+    return x <= ASSAULT_ZONE - pad || x >= WORLD.w - ASSAULT_ZONE + pad
+      || y <= ASSAULT_ZONE - pad || y >= WORLD.h - ASSAULT_ZONE + pad;
+  }
+
   function zoneAt(x, y) {
     if (state.mode === "siege") return inSiegeRed(x, y) ? "boss" : null;
+    if (state.mode === "assault") return inAssaultSpawnRing(x, y) ? "blue" : null;
     if (state.mode === "tdm") {
       if (x <= BASE_W) return "blue";
       if (x >= WORLD.w - BASE_W) return "red";
@@ -1367,6 +1373,23 @@
     }
   }
 
+  function clearAssaultSpawnRing() {
+    const m = state.maze;
+    if (!m) return;
+    for (let r = 0; r < m.rows; r++) {
+      for (let c = 0; c < m.cols; c++) {
+        if (!m.filled[r][c]) continue;
+        const x = m.x0 + c * m.cube;
+        const y = m.y0 + r * m.cube;
+        if (x < ASSAULT_ZONE || y < ASSAULT_ZONE
+          || x + m.cube > WORLD.w - ASSAULT_ZONE
+          || y + m.cube > WORLD.h - ASSAULT_ZONE) {
+          m.filled[r][c] = false;
+        }
+      }
+    }
+  }
+
   function openAround(x, y, minD, maxD, rad = 42) {
     for (let i = 0; i < 40; i++) {
       const a = rand(0, TAU);
@@ -1425,8 +1448,30 @@
       const h = healerDominator();
       if (h) return openAround(h.x, h.y, 150, 280, 36);
     }
-    if (state.assaultBlue) return openAround(state.assaultBlue.x, state.assaultBlue.y, 40, 380, 36);
+    if (team === "blue") {
+      const pad = 58;
+      for (let i = 0; i < 80; i++) {
+        const p = { x: rand(pad, WORLD.w - pad), y: rand(pad, WORLD.h - pad) };
+        if (!inAssaultSpawnRing(p.x, p.y, pad) || hitsWall(p.x, p.y, 40)) continue;
+        return p;
+      }
+      return { x: WORLD.w * 0.5, y: ASSAULT_ZONE * 0.5 };
+    }
     return randomInWorld(200);
+  }
+
+  function assaultRingApproach(target, gap = 140) {
+    const inset = ASSAULT_ZONE + gap;
+    const x = clamp(target.x, inset, WORLD.w - inset);
+    const y = clamp(target.y, inset, WORLD.h - inset);
+    const edges = [
+      { d: target.x, x: inset, y },
+      { d: WORLD.w - target.x, x: WORLD.w - inset, y },
+      { d: target.y, x, y: inset },
+      { d: WORLD.h - target.y, x, y: WORLD.h - inset },
+    ];
+    edges.sort((a, b) => a.d - b.d);
+    return edges[0];
   }
 
   function welcomeSpawnNotes() {
@@ -1500,6 +1545,7 @@
         m.filled[r][c] = false;
       }
     }
+    clearAssaultSpawnRing();
     const n = irand(4, 8);
     const corners = [
       { x: inset, y: WORLD.h - inset },
@@ -1510,16 +1556,19 @@
     const home = corners[irand(0, corners.length - 1)];
     state.assaultBlue = { x: WORLD.w - home.x, y: WORLD.h - home.y };
     punchMazeAt(home.x, home.y, 480);
-    punchMazeAt(state.assaultBlue.x, state.assaultBlue.y, 420);
     const spots = [home];
     const minGap = WORLD.w * 0.14;
+    const objectivePad = ASSAULT_ZONE + 360;
     for (let i = 1; i < n; i++) {
       const t = i / (n - 1 || 1);
       let placed = null;
       for (let k = 0; k < 36; k++) {
         const x = home.x + (state.assaultBlue.x - home.x) * (0.12 + t * 0.7) + rand(-WORLD.w * 0.08, WORLD.w * 0.08);
         const y = home.y + (state.assaultBlue.y - home.y) * (0.12 + t * 0.7) + rand(-WORLD.h * 0.08, WORLD.h * 0.08);
-        const p = { x: clamp(x, 520, WORLD.w - 520), y: clamp(y, 520, WORLD.h - 520) };
+        const p = {
+          x: clamp(x, objectivePad, WORLD.w - objectivePad),
+          y: clamp(y, objectivePad, WORLD.h - objectivePad),
+        };
         if (spots.some((s) => (s.x - p.x) ** 2 + (s.y - p.y) ** 2 < minGap * minGap)) continue;
         placed = p;
         break;
@@ -2386,9 +2435,13 @@
 
   function safeShapePosition(preferred, radius) {
     const margin = Math.max(24, radius + 6);
+    const touchesAssaultRing = (p) => state.mode === "assault" && [
+      [0, 0], [radius + 4, 0], [-radius - 4, 0], [0, radius + 4], [0, -radius - 4],
+    ].some(([dx, dy]) => inAssaultSpawnRing(p.x + dx, p.y + dy));
     const valid = (p) => p
       && p.x >= margin && p.y >= margin
       && p.x <= WORLD.w - margin && p.y <= WORLD.h - margin
+      && !touchesAssaultRing(p)
       && !hitsWall(p.x, p.y, radius + 4);
     if (valid(preferred)) return preferred;
     if (preferred) {
@@ -5063,6 +5116,11 @@
         const steered = steerAround(tank, s.x, s.y);
         tx = steered.x;
         ty = steered.y;
+      } else if (state.mode === "assault") {
+        const h = healerDominator() || { x: WORLD.w * 0.5, y: WORLD.h * 0.5 };
+        const steered = steerAround(tank, h.x, h.y);
+        tx = steered.x;
+        ty = steered.y;
       } else {
         const home = baseCenter(tank.team);
         const steered = steerAround(tank, home.x, home.y);
@@ -5082,7 +5140,11 @@
     } else if (tank.aiState === "attack" && enemy) {
       const enemySeen = canSee(tank, enemy);
       const ez = zoneAt(enemy.x, enemy.y);
-      if (maze && !enemySeen) {
+      if (state.mode === "assault" && ez === "blue" && ez === enemy.team) {
+        const edge = assaultRingApproach(enemy);
+        tx = edge.x;
+        ty = edge.y;
+      } else if (maze && !enemySeen) {
         tx = enemy.x;
         ty = enemy.y;
       } else if (ez && ez === enemy.team) {
@@ -5627,6 +5689,15 @@
       s.y += s.vy * dt;
       s.x = clamp(s.x, s.r, WORLD.w - s.r);
       s.y = clamp(s.y, s.r, WORLD.h - s.r);
+      if (state.mode === "assault") {
+        const inset = ASSAULT_ZONE + s.r + 4;
+        const x = clamp(s.x, inset, WORLD.w - inset);
+        const y = clamp(s.y, inset, WORLD.h - inset);
+        if (x !== s.x) s.vx *= -0.25;
+        if (y !== s.y) s.vy *= -0.25;
+        s.x = x;
+        s.y = y;
+      }
       if (isRoyale() && royaleLocked() && !royaleInside(s)) {
         s.health -= s.maxHealth * 0.35 * dt;
         if (s.health <= 0) s.alive = false;
@@ -6517,6 +6588,17 @@
       }
     }
     if (state.mode === "assault") {
+      ctx.fillStyle = TEAMS.blue.color;
+      ctx.globalAlpha = 0.16;
+      ctx.fillRect(0, 0, WORLD.w, ASSAULT_ZONE);
+      ctx.fillRect(0, WORLD.h - ASSAULT_ZONE, WORLD.w, ASSAULT_ZONE);
+      ctx.fillRect(0, ASSAULT_ZONE, ASSAULT_ZONE, WORLD.h - ASSAULT_ZONE * 2);
+      ctx.fillRect(WORLD.w - ASSAULT_ZONE, ASSAULT_ZONE, ASSAULT_ZONE, WORLD.h - ASSAULT_ZONE * 2);
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = TEAMS.blue.color;
+      ctx.lineWidth = 8;
+      ctx.strokeRect(ASSAULT_ZONE, ASSAULT_ZONE, WORLD.w - ASSAULT_ZONE * 2, WORLD.h - ASSAULT_ZONE * 2);
+      ctx.globalAlpha = 1;
       for (const d of assaultDoms()) {
         const col = d.destroyed ? "#8a8a8a" : (TEAMS[d.team] ? TEAMS[d.team].color : "#8a8a8a");
         const zr = assaultZoneR(d);
@@ -6715,6 +6797,11 @@
     } else if (state.mode === "tdm") {
       paintZone("blue", 0, 0, BASE_W, WORLD.h);
       paintZone("red", WORLD.w - BASE_W, 0, BASE_W, WORLD.h);
+    } else if (state.mode === "assault") {
+      paintZone("blue", 0, 0, WORLD.w, ASSAULT_ZONE);
+      paintZone("blue", 0, WORLD.h - ASSAULT_ZONE, WORLD.w, ASSAULT_ZONE);
+      paintZone("blue", 0, ASSAULT_ZONE, ASSAULT_ZONE, WORLD.h - ASSAULT_ZONE * 2);
+      paintZone("blue", WORLD.w - ASSAULT_ZONE, ASSAULT_ZONE, ASSAULT_ZONE, WORLD.h - ASSAULT_ZONE * 2);
     } else if (state.mode === "siege") {
       const L = siegeLayout();
       if (L) {
@@ -6741,12 +6828,6 @@
       const sz = t.mainBase ? 9 : 6;
       mctx.fillStyle = col;
       mctx.fillRect(mapX(t.x) - sz / 2, mapY(t.y) - sz / 2, sz, sz);
-    }
-    if (state.mode === "assault" && state.assaultBlue) {
-      mctx.fillStyle = TEAMS.blue.color;
-      mctx.globalAlpha = 0.45;
-      mctx.fillRect(mapX(state.assaultBlue.x) - 4, mapY(state.assaultBlue.y) - 4, 8, 8);
-      mctx.globalAlpha = 1;
     }
     if (isRoyale()) {
       const c = stormCenter();
@@ -6990,7 +7071,7 @@
     protect: "Two motherships roam · random team · start at 45 · [N] skip to 45 · [H] to take control · win or 4 hours starts a fresh server",
     maze: "FFA · open L / Y / zig wall clusters · start at 45 · fresh server after 4 hours",
     domination: "Capture 4 points · random team · start at 45 · win or 4 hours starts a fresh server",
-    assault: "Blue attacks Green · smaller maze · capture zones · start at 45 · Green wins in 10:00 if they hold 3/4 · win or 4 hours starts a fresh server",
+    assault: "Blue attacks Green · Blue spawns across a protected 360-wide perimeter ring · smaller maze · capture zones · start at 45 · Green wins in 10:00 if they hold 3/4 · win or 4 hours starts a fresh server",
     siege: "Open maps · red corners kill you · bosses spawn outside and siege sanctuaries · restore fallen sanctuaries · win or 4 hours starts a fresh server",
     growth: "FFA · grow past 45 to 1000 · everyone starts at 45 · never below 45 · [N] skip to 45 · fresh server after 4 hours",
     onehp: "Everyone for themselves · 1 HP · no shields · health stats do nothing · medium map · start at 45 · fresh server after 4 hours",
@@ -7000,7 +7081,7 @@
     armsrace: "FFA rules · expanded Arras class tree · hybrids, extra T4–T5 tanks at 45 · start at 45 · never below 45 · [N] skip to 45 · fresh server after 4 hours",
     "growth-ar": "Growth · Arms Race class tree · everyone starts at 45 · never below 45 · [N] skip to 45 · fresh server after 4 hours",
     "protect-ar": "Mothership Protect · Arms Race class tree · random team · start at 45 · [N] skip · [H] to take control · win or 4 hours starts a fresh server",
-    "assault-ar": "Assault · Arms Race class tree · Blue attacks Green · capture zones · Green wins in 10:00 if they hold 3/4 · win or 4 hours starts a fresh server",
+    "assault-ar": "Assault · Arms Race class tree · Blue spawns across a protected 360-wide perimeter ring · Blue attacks Green · capture zones · Green wins in 10:00 if they hold 3/4 · win or 4 hours starts a fresh server",
     "tdm-ar": "Red vs blue · Arms Race class tree · random team · start at 45 · kills pay 80–90% · respawn 15–20% · fresh server after 4 hours",
     "4tdm-ar": "Four bases · Arms Race class tree · random team · start at 45 · fresh server after 4 hours",
     "royalemaze-ar": "Royale Maze · Arms Race class tree · L / Y / zig clusters · storm closes fully · last tank wins · then a fresh server",
